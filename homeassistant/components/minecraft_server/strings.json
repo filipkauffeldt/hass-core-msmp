@@ -4,9 +4,28 @@
       "already_configured": "[%key:common::config_flow::abort::already_configured_service%]"
     },
     "error": {
-      "cannot_connect": "Failed to connect to server. Please check the address and try again. If a port was provided, it must be within a valid range. If you are running a Minecraft Java Edition server, ensure that it is at least version {minimum_minecraft_version}."
+      "cannot_connect": "Failed to connect to server. Please check the address and try again. If a port was provided, it must be within a valid range. If you are running a Minecraft Java Edition server, ensure that it is at least version {minimum_minecraft_version}.",
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "management_cannot_connect": "Failed to connect to the management server. Check that it is enabled in server.properties and that the port and TLS setting match.",
+      "management_request_failed": "The management server accepted the connection but returned an error for the status request."
     },
     "step": {
+      "management": {
+        "data": {
+          "management_host": "Management host",
+          "management_port": "Management port",
+          "management_secret": "Management secret",
+          "management_tls": "Use TLS"
+        },
+        "data_description": {
+          "management_host": "The hostname or IP address of the management server. Defaults to the host of the game server address.",
+          "management_port": "The port of the management server, as set in server.properties.",
+          "management_secret": "The management server secret. Leave empty to skip this step.",
+          "management_tls": "Enable if the management server uses TLS. Self-signed certificates are not supported yet."
+        },
+        "description": "Optionally connect to the management server to control your Minecraft Server from Home Assistant.",
+        "title": "Management connection"
+      },
       "user": {
         "data": {
           "address": "Server address"
