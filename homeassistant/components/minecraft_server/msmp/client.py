@@ -120,8 +120,14 @@ class MsmpClient:
             except ValueError as err:
                 raise MsmpConnectionError("Received invalid JSON") from err
             # Messages without a matching ID are notifications, ignored for now.
-            if isinstance(data, dict) and data.get("id") == request_id:
-                return data
+            if isinstance(data, dict):
+                msg_id = data.get("id")
+                if msg_id == request_id:
+                    return data
+                if isinstance(msg_id, int) and msg_id > request_id:
+                    raise MsmpConnectionError(
+                        f"Unexpected response ID {msg_id}, expected {request_id}"
+                    )
 
     async def close(self) -> None:
         """Close the WebSocket cleanly. Safe to call more than once."""

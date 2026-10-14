@@ -83,6 +83,9 @@ class MinecraftServerConfigFlow(ConfigFlow, domain=DOMAIN):
 
                         # Only Java Edition has a management protocol.
                         if server_type is MinecraftServerType.JAVA_EDITION:
+                            # Keeping the data on the flow instance because it's HA that calls the next step
+                            # on every form submit and only passes the form values.
+                            # An argument would be lost after the first call.
                             self._config_data = config_data
                             return await self.async_step_management()
 
