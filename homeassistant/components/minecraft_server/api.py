@@ -54,11 +54,15 @@ class MinecraftServerAddressError(Exception):
     """Raised when the input address is invalid."""
 
 
-class MinecraftServerConnectionError(Exception):
+class MinecraftServerDataError(Exception):
+    """Superclass for errors raised when fetching data from the server."""
+
+
+class MinecraftServerConnectionError(MinecraftServerDataError):
     """Raised when no data can be fechted from the server."""
 
 
-class MinecraftServerNotInitializedError(Exception):
+class MinecraftServerNotInitializedError(MinecraftServerDataError):
     """Raised when APIs are used although server instance is not initialized yet."""
 
 
@@ -104,10 +108,7 @@ class MinecraftServer:
         """Check if the server is online."""
         try:
             await self.async_get_data()
-        except (
-            MinecraftServerConnectionError,
-            MinecraftServerNotInitializedError,
-        ) as error:
+        except MinecraftServerDataError as error:
             _LOGGER.debug(
                 "Connection check of %s server failed: %s",
                 self._server_type,
