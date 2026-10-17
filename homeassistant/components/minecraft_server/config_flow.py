@@ -39,23 +39,10 @@ class MinecraftServerConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ADDRESS: address,
             }
 
-            # Some Bedrock Edition servers mimic a Java Edition
-            # server, therefore check for Bedrock Edition first.
-            for server_type in MinecraftServerType:
-                api = MinecraftServer(self.hass, server_type, address)
-
-                try:
-                    await api.async_initialize()
-                except MinecraftServerAddressError as error:
-                    _LOGGER.debug(
-                        "Initialization of %s server failed: %s",
-                        server_type,
-                        error,
-                    )
-                else:
-                    if await api.async_is_online():
-                        config_data[CONF_TYPE] = server_type
-                        return self.async_create_entry(title=address, data=config_data)
+            server_type = await self._async_detect_server_type(address)
+            if server_type is not None:
+                config_data[CONF_TYPE] = server_type
+                return self.async_create_entry(title=address, data=config_data)
 
             # Host or port invalid or server not reachable.
             errors["base"] = "cannot_connect"
@@ -63,6 +50,30 @@ class MinecraftServerConfigFlow(ConfigFlow, domain=DOMAIN):
         # Show configuration form (default form in case of no user_input,
         # form filled with user_input and eventually with errors otherwise).
         return self._show_config_form(user_input, errors)
+
+    async def _async_detect_server_type(
+        self, address: str
+    ) -> MinecraftServerType | None:
+        """Return the first responding server type."""
+        # Some Bedrock Edition servers mimic a Java Edition
+        # server, therefore check for Bedrock Edition first.
+        for server_type in MinecraftServerType:
+            api = MinecraftServer(self.hass, server_type, address)
+
+            try:
+                await api.async_initialize()
+            except MinecraftServerAddressError as error:
+                _LOGGER.debug(
+                    "Initialization of %s server failed: %s",
+                    server_type,
+                    error,
+                )
+                continue
+
+            if await api.async_is_online():
+                return server_type
+
+        return None
 
     def _show_config_form(
         self,
