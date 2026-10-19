@@ -9,7 +9,12 @@ from typing import Any, Self
 import aiohttp
 from yarl import URL
 
-from .exceptions import MsmpAuthError, MsmpConnectionError, MsmpRequestError
+from .exceptions import (
+    MsmpAuthError,
+    MsmpConnectionError,
+    MsmpRequestError,
+    MsmpResponseError,
+)
 
 SUBPROTOCOL = "minecraft-v1"
 DEFAULT_CONNECT_TIMEOUT = 10
@@ -38,8 +43,9 @@ class MsmpClient:
         self._request_timeout = request_timeout
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._request_id = 0
-        # Only one call may read from the socket at a time.
-        self._lock = asyncio.Lock()
+
+        # A dictionary {int id: dict | None response} of request IDs without a response yet
+        self._responses: dict[int, dict[str, Any] | None] = {}
 
     @property
     def connected(self) -> bool:
@@ -80,37 +86,50 @@ class MsmpClient:
         Raises MsmpRequestError if the server answers with an error, and
         MsmpConnectionError if the connection fails or the call times out.
         """
-        async with self._lock:
-            ws = self._ws
-            if ws is None or ws.closed:
-                raise MsmpConnectionError("Not connected")
+        # async with self._lock:
+        ws = self._ws
+        if ws is None or ws.closed:
+            raise MsmpConnectionError("Not connected")
 
-            self._request_id += 1
-            request_id = self._request_id
-            request: dict[str, Any] = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": method,
-            }
-            if params is not None:
-                request["params"] = params
+        self._request_id += 1
+        request_id = self._request_id
+        request: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+        }
+        if params is not None:
+            request["params"] = params
 
-            try:
-                async with asyncio.timeout(self._request_timeout):
-                    await ws.send_json(request)
-                    response = await self._receive_response(ws, request_id)
-            except (aiohttp.ClientError, TimeoutError, OSError) as err:
-                raise MsmpConnectionError(f"Call to {method} failed: {err}") from err
+        self._responses[request_id] = None
+
+        try:
+            async with asyncio.timeout(self._request_timeout):
+                await ws.send_json(request)
+                response = await self._receive_response(ws, request_id)
+
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            raise MsmpConnectionError(
+                f"Request {request_id} to {method} failed: {err}"
+            ) from err
 
         if (error := response.get("error")) is not None:
-            raise MsmpRequestError(f"Call to {method} failed: {error}")
+            raise MsmpRequestError(f"Request {request_id} to {method} failed: {error}")
+
+        del self._responses[int(response["id"])]
+
         return response.get("result")
 
-    @staticmethod
     async def _receive_response(
-        ws: aiohttp.ClientWebSocketResponse, request_id: int
+        self, ws: aiohttp.ClientWebSocketResponse, request_id: int
     ) -> dict[str, Any]:
-        """Read messages until the response with the given ID arrives."""
+        """Read server responses."""
+        if request_id in self._responses:
+            response = self._responses[request_id]
+
+            if response is not None:
+                return response
+
         while True:
             msg = await ws.receive()
             if msg.type is not aiohttp.WSMsgType.TEXT:
@@ -122,12 +141,16 @@ class MsmpClient:
             # Messages without a matching ID are notifications, ignored for now.
             if isinstance(data, dict):
                 msg_id = data.get("id")
+
+                if msg_id not in self._responses:
+                    raise MsmpResponseError(
+                        f"Unexpectedly received response for request {msg_id} -- waiting for {', '.join(map(str, self._responses.keys()))}"
+                    )
+
+                self._responses[msg_id] = data
+
                 if msg_id == request_id:
                     return data
-                if isinstance(msg_id, int) and msg_id > request_id:
-                    raise MsmpConnectionError(
-                        f"Unexpected response ID {msg_id}, expected {request_id}"
-                    )
 
     async def close(self) -> None:
         """Close the WebSocket cleanly. Safe to call more than once."""
