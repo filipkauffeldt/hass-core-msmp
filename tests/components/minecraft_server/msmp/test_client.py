@@ -1,6 +1,7 @@
 """Tests for the MSMP client."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -11,11 +12,28 @@ from homeassistant.components.minecraft_server.msmp.client import MsmpClient
 from homeassistant.components.minecraft_server.msmp.exceptions import (
     MsmpAuthError,
     MsmpConnectionError,
+    MsmpResponseError,
 )
 
 HOST = "localhost"
 PORT = 25585
 SECRET = "super-secret-token"
+
+
+def mock_ws_response(
+    id: int, output: dict[str, any] | list[any] | None = None
+) -> aiohttp.WSMessage:
+    """Create a mock message for the mocked websocket server."""
+    return aiohttp.WSMessage(
+        type=aiohttp.WSMsgType.TEXT,
+        data=json.dumps(
+            {
+                "id": id,
+                "result": output,
+            }
+        ),
+        extra=None,
+    )
 
 
 @pytest.fixture
@@ -24,10 +42,18 @@ def ws() -> MagicMock:
     mock_ws = MagicMock(spec=aiohttp.ClientWebSocketResponse)
     mock_ws.closed = False
 
+    received_messages = {}
+
     async def _close(*args: object, **kwargs: object) -> bool:
         mock_ws.closed = True
         return True
 
+    def _send_json(*args, **kwargs):
+        request: object = args[0]
+
+        received_messages[request["id"]] = request
+
+    mock_ws.send_json = AsyncMock(side_effect=_send_json)
     mock_ws.close = AsyncMock(side_effect=_close)
     return mock_ws
 
@@ -210,3 +236,101 @@ async def test_connect_other_http_error_is_not_auth_error(
         await client.connect()
 
     assert not isinstance(exc_info.value, MsmpAuthError)
+
+
+async def test_single_ws_request_receives_response(
+    client: MsmpClient,
+    ws: MagicMock,
+) -> None:
+    """Test a single WS request gets a response."""
+    await client.connect()
+
+    ws.receive = AsyncMock(return_value=mock_ws_response(1, []))
+
+    response = await client.call("minecraft:allowlist")
+
+    assert response == []
+
+
+@pytest.mark.parametrize("id", [-2, -1, 0, 2, 3, 4])
+async def test_ws_request_response_catches_unexpected_ids(
+    id: int, client: MsmpClient, ws: MagicMock
+) -> None:
+    """Tests that unexpected IDs get caught."""
+    await client.connect()
+
+    ws.receive = AsyncMock(return_value=mock_ws_response(id))
+
+    with pytest.raises(MsmpResponseError) as error:
+        await client.call("minecraft:allowlist")
+
+    assert f"Unexpectedly received response for request {id} -- waiting for 1" in str(
+        error.value
+    )
+
+
+async def test_sequential_ws_requests_receive_correct_responses(
+    client: MsmpClient,
+    ws: MagicMock,
+) -> None:
+    """Test that each of the multiple WS requests each gets the expected response when the responses are sent in order."""
+    await client.connect()
+
+    ws.receive = AsyncMock(return_value=mock_ws_response(1, []))
+    response1 = await client.call("minecraft:allowlist")
+
+    ws.receive = AsyncMock(return_value=mock_ws_response(2, ["Player1", "Herobrine"]))
+    response2 = await client.call("minecraft:ban")
+
+    ws.receive = AsyncMock(
+        return_value=mock_ws_response(3, {"players": [], "started": True})
+    )
+    response3 = await client.call("minecraft:server/status")
+
+    assert response1 == []
+    assert response2 == ["Player1", "Herobrine"]
+    assert response3 == {"players": [], "started": True}
+
+
+class FakeWebSocketClient:
+    """WS fake to test responding to concurrent requests."""
+
+    def __init__(self) -> None:
+        """Set up queue and sent messages."""
+        self.incoming = asyncio.Queue()
+        self.sent = []
+        self.closed = False
+
+    async def send_json(self, message):
+        """Whenever we send a message to the WS server, save it and send it only when all 2 requests have been sent."""
+        self.sent.append(message)
+
+        if len(self.sent) == 2:
+            await self.incoming.put(mock_ws_response(2, ["Mean Player 1", "Herobrine"]))
+            await self.incoming.put(mock_ws_response(1, []))
+
+    async def receive(self):
+        """Get the first message from the queue."""
+        return await self.incoming.get()
+
+    async def close(self):
+        """Mock close method."""
+
+
+async def test_concurrent_ws_requests_receive_correct_responses() -> None:
+    """Test that each of the multiple WS requests gets the expected response, even when the responses are sent out of order."""
+    mock_session = MagicMock(spec=aiohttp.ClientSession)
+    mock_session.ws_connect = AsyncMock(return_value=FakeWebSocketClient())
+
+    client = MsmpClient(mock_session, HOST, PORT, SECRET)
+
+    await client.connect()
+
+    responses = await asyncio.gather(
+        client.call("minecraft:allowlist"),
+        client.call("minecraft:ban"),
+    )
+
+    assert len(responses) == 2
+    assert responses[0] == []
+    assert responses[1] == ["Mean Player 1", "Herobrine"]

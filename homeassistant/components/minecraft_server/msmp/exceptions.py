@@ -15,3 +15,7 @@ class MsmpAuthError(MsmpConnectionError):
 
 class MsmpRequestError(MsmpError):
     """Raised when the server answers a request with an error."""
+
+
+class MsmpResponseError(MsmpError):
+    """Raised when the server gives an unexpected response."""

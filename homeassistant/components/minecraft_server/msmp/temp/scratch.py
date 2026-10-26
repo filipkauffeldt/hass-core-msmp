@@ -44,8 +44,12 @@ async def main() -> None:
         )
         async with client:
             print("connected:", client.connected)  # noqa: T201
+
+            print("status:", await client.call("minecraft:server/status"))  # noqa: T201
+            print("allowlist:", await client.call("minecraft:allowlist"))  # noqa: T201
+            print("banlist:", await client.call("minecraft:bans"))  # noqa: T201
+
         print("after close:", client.connected)  # noqa: T201
-        print("status:", await client.call("minecraft:server/status"))  # noqa: T201
 
 
 asyncio.run(main())
