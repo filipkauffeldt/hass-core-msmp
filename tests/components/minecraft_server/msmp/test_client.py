@@ -53,19 +53,6 @@ def ws() -> MagicMock:
 
         received_messages[request["id"]] = request
 
-    # def _receive():
-    #     return mock_server_message(1, [])
-    #     # return aiohttp.WSMessage(
-    #     #     type=aiohttp.WSMsgType.TEXT,
-    #     #     data=json.dumps(
-    #     #         {
-    #     #             "id": 1,
-    #     #             "result": [],
-    #     #         }
-    #     #     ),
-    #     #     extra=None,
-    #     # )
-
     mock_ws.send_json = AsyncMock(side_effect=_send_json)
     mock_ws.close = AsyncMock(side_effect=_close)
     return mock_ws
