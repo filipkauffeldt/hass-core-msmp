@@ -6,6 +6,7 @@ from typing import Any
 import aiohttp
 from yarl import URL
 
+from .. import _LOGGER
 from .exceptions import MsmpAuthError, MsmpConnectionError, MsmpRequestError
 
 SUBPROTOCOL = "minecraft-v1"
@@ -132,8 +133,31 @@ class WsConnection:
     async def listen(self) -> None:
         """Listens for messages from the WS server and matches them to their corresponding request."""
         while self._ws is not None and not self._ws.closed:
-            # Asynchronous equivalent of "Pass"; prevents unit test timeouts
-            await asyncio.sleep(0.001)
+            msg = await self._ws.receive()
+
+            if msg.type is not aiohttp.WSMsgType.TEXT:
+                _LOGGER.error(f"Connection lost({msg.type.name})")
+                continue
+
+            try:
+                data = msg.json()
+            except ValueError as err:
+                _LOGGER.error(f"Received invalid JSON ({err})")
+                continue
+
+            if not isinstance(data, dict):
+                _LOGGER.error(f"Unexpected response format: {data}")
+                continue
+
+            msg_id = data.get("id")
+            if msg_id not in self._pending_requests:
+                _LOGGER.error(
+                    f"Received response for request ID {msg_id} which could not be found."
+                )
+                continue
+
+            if not self._pending_requests[msg_id].done():
+                self._pending_requests[msg_id].set_result(data)
 
     async def close(self) -> None:
         """Close the WebSocket connection cleanly."""

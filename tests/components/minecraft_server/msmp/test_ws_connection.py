@@ -1,7 +1,11 @@
 """Tests for the WS connection wrapper."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from collections.abc import AsyncGenerator
+import json
+import logging
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
@@ -18,8 +22,73 @@ PORT = 25585
 SECRET = "super-secret-token"
 
 
+class FakeWs:
+    """A WS fake to replace the aiohttp instance for unit testing purposes."""
+
+    def __init__(self) -> None:
+        """Initialisation."""
+        self.connected = False
+        self.closed = False
+
+        self.incoming = asyncio.Queue()  # Messages sent from the server
+        self.outgoing = asyncio.Queue()  # Messages sent to the server
+
+        self.waited_for_n_outgoing_messages = asyncio.Event()
+
+    def create_ws_response(
+        self, id: int, output: dict[str, Any] | list | None = None
+    ) -> aiohttp.WSMessage:
+        """Create a WS response object."""
+        return aiohttp.WSMessage(
+            type=aiohttp.WSMsgType.TEXT,
+            data=json.dumps({"id": id, "result": output}),
+            extra=None,
+        )
+
+    async def ws_connect(self, *args, **kwargs):
+        """Return connection."""
+        self.connected = True
+        return self
+
+    async def send_json(self, request: dict) -> None:
+        """Sending a message to the server."""
+        await self.outgoing.put(request)
+        self.waited_for_n_outgoing_messages.set()
+
+    async def wait_for_n_outgoing_messages(self, n: int) -> None:
+        """Wait for `n` messages to be sent -- use to ensure `n` messages have been sent before continuing with the test."""
+        while self.outgoing.qsize() < n:
+            self.waited_for_n_outgoing_messages.clear()
+            await self.waited_for_n_outgoing_messages.wait()
+
+    async def send_from_server(
+        self, id: int, output: dict[str, Any] | list | None = None
+    ) -> None:
+        """Create a message to send from the "server" to the WS client."""
+        await self.incoming.put(self.create_ws_response(id, output))
+
+    async def receive(self) -> aiohttp.WSMessage:
+        """Receiving a message from the server."""
+        return await self.incoming.get()
+
+    async def close(self):
+        """Closes connection."""
+        self.closed = True
+        return True
+
+
 @pytest.fixture
-async def ws() -> MagicMock:
+async def ws() -> AsyncGenerator[FakeWs]:
+    """Return a fake WebSocket to test behaviour with incoming/outgoing messages."""
+    mock_ws = FakeWs()
+
+    yield mock_ws
+
+    await mock_ws.close()
+
+
+@pytest.fixture
+async def simple_ws() -> AsyncGenerator[MagicMock]:
     """Return a mock WebSocket that flips `closed` when closed."""
     mock_ws = MagicMock(spec=aiohttp.ClientWebSocketResponse)
     mock_ws.closed = False
@@ -36,8 +105,8 @@ async def ws() -> MagicMock:
 
 
 @pytest.fixture
-async def session(ws: MagicMock) -> MagicMock:
-    """Return a mock aiohttp session whose ws_connect returns the mock socket."""
+async def session(ws: FakeWs) -> AsyncGenerator[MagicMock]:
+    """Return a mock aiohttp session whose ws_connect returns the FakeWs instance."""
     mock_session = MagicMock(spec=aiohttp.ClientSession)
     mock_session.ws_connect = AsyncMock(return_value=ws)
 
@@ -47,7 +116,18 @@ async def session(ws: MagicMock) -> MagicMock:
 
 
 @pytest.fixture
-async def ws_connection(session: MagicMock) -> WsConnection:
+async def simple_session(simple_ws: MagicMock) -> AsyncGenerator[MagicMock]:
+    """Return a mock aiohttp session whose ws_connect returns the mock socket."""
+    mock_session = MagicMock()
+    mock_session.ws_connect = AsyncMock(return_value=simple_ws)
+
+    yield mock_session
+
+    await simple_ws.close()
+
+
+@pytest.fixture
+async def ws_connection(session: MagicMock) -> AsyncGenerator[WsConnection]:
     """Return a WS connection using the mock session."""
     ws_connection = WsConnection(session, HOST, PORT, SECRET)
 
@@ -140,16 +220,16 @@ async def test_connect_timeout(session: MagicMock) -> None:
     assert not ws_connection.connected
 
 
-async def test_close_closes_socket_once(
-    ws_connection: WsConnection, ws: MagicMock
-) -> None:
+async def test_close_closes_socket_once(simple_session) -> None:
     """Test close shuts the socket and is safe to call repeatedly."""
+    ws_connection = WsConnection(simple_session, HOST, PORT, SECRET)
+
     await ws_connection.connect()
 
     await ws_connection.close()
     await ws_connection.close()
 
-    ws.close.assert_awaited_once()
+    ws_connection._ws.close.assert_awaited_once()
     assert not ws_connection.connected
     assert ws_connection.closed
 
@@ -245,3 +325,105 @@ async def test_connect_other_http_error_is_not_auth_error(
         await ws_connection.connect()
 
     assert not isinstance(exc_info.value, MsmpAuthError)
+
+
+async def test_single_ws_request_receives_response(ws_connection: WsConnection) -> None:
+    """Test a single WS request gets a response."""
+    await ws_connection.connect()
+
+    await ws_connection._ws.send_from_server(1, ["Player1"])
+
+    response = await ws_connection.call("minecraft:allowlist")
+
+    assert response == ["Player1"]
+
+
+@pytest.mark.parametrize("id", [-2, -1, 0, 2, 3, 4])
+async def test_listener_catches_unexpected_ids_2(
+    id: int, ws_connection: WsConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Tests that unexpected IDs get caught.
+
+    Since we're mocking the logger with `patch.object()`, we need to store a reference to the original `_LOGGER.error()` method so that we can invoke it when the mock gets called. I think this test looks very clumsy, but I didn't find any better way to ensure that `_LOGGER.error()` was called without relying on a timeout.
+    """
+
+    # Prepare logger for mocking
+    _LOGGER: logging.Logger = logging.getLogger(
+        "homeassistant.components.minecraft_server"
+    )
+    original_logger = _LOGGER.error
+    logged = asyncio.Event()
+
+    def mark_as_logged(*args, **kwargs):
+        original_logger(*args, **kwargs)
+        logged.set()
+
+    # Connect and set up response
+    await ws_connection.connect()
+    await ws_connection._ws.send_from_server(id, [])
+
+    # Set up a listener
+    with (
+        patch.object(_LOGGER, "error", side_effect=mark_as_logged),
+        caplog.at_level(logging.ERROR, _LOGGER.name),
+    ):
+        call_task = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+        await asyncio.wait_for(logged.wait(), timeout=1)
+
+        call_task.cancel()
+
+    assert f"Received response for request ID {id}" in caplog.text
+
+
+async def test_sequential_ws_requests_receive_correct_responses(
+    ws_connection: WsConnection,
+) -> None:
+    """Test that each of the multiple WS requests each gets the expected response when the responses are sent in order."""
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    await ws.send_from_server(1, [])
+    response1 = await ws_connection.call("minecraft:allowlist")
+
+    await ws.send_from_server(2, ["Mean Player1", "Herobrine"])
+    response2 = await ws_connection.call("minecraft:ban")
+
+    await ws.send_from_server(3, {"started": True})
+    response3 = await ws_connection.call("minecraft:server/status")
+
+    assert ws.incoming.qsize() == 0
+    assert ws.outgoing.qsize() == 3
+
+    assert response1 == []
+    assert response2 == ["Mean Player1", "Herobrine"]
+    assert response3 == {"started": True}
+
+
+@pytest.mark.parametrize(
+    "order", [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+)
+async def test_concurrent_ws_requests_receive_correct_responses(
+    order: list[int],
+    ws_connection: WsConnection,
+) -> None:
+    """Test that each of the multiple WS requests gets the expected response, even when the responses are sent out of order."""
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+    task2 = asyncio.create_task(ws_connection.call("minecraft:ban"))
+    task3 = asyncio.create_task(ws_connection.call("minecraft:server/status"))
+
+    await ws.wait_for_n_outgoing_messages(3)
+
+    responses = [(1, []), (2, ["Mean Player1", "Herobrine"]), (3, {"started": True})]
+
+    await ws.send_from_server(*responses[order[0]])
+    await ws.send_from_server(*responses[order[1]])
+    await ws.send_from_server(*responses[order[2]])
+
+    response1, response2, response3 = await asyncio.gather(task1, task2, task3)
+
+    assert response1 == []
+    assert response2 == ["Mean Player1", "Herobrine"]
+    assert response3 == {"started": True}
