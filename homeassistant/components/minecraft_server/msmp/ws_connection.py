@@ -46,6 +46,11 @@ class WsConnection:
         self.__request_id = 0
 
     @property
+    def pending_requests_count(self) -> int:
+        """Returns how many requests are pending."""
+        return len(self._pending_requests)
+
+    @property
     def connected(self) -> bool:
         """Return True if the WebSocket is open."""
         return self._ws is not None and not self._ws.closed
@@ -90,7 +95,14 @@ class WsConnection:
 
         return self.__request_id
 
-    def _build_request_body(
+    def __cancel_pending_requests(self) -> None:
+        """Cancels all pending requests."""
+        for future in self._pending_requests.values():
+            future.cancel()
+
+        self._pending_requests.clear()
+
+    def build_request_body(
         self, method: str, params: dict[str, Any] | list[Any] | None = None
     ) -> dict[str, Any]:
         """Build the request body."""
@@ -113,7 +125,7 @@ class WsConnection:
         if ws is None or ws.closed:
             raise MsmpConnectionError("Not connected")
 
-        request = self._build_request_body(method, params)
+        request = self.build_request_body(method, params)
 
         try:
             future = asyncio.get_running_loop().create_future()
@@ -123,40 +135,59 @@ class WsConnection:
                 await ws.send_json(request)
                 response = await asyncio.wait_for(future, self._request_timeout)
 
-        except (aiohttp.ClientError, TimeoutError, OSError) as err:
-            raise MsmpConnectionError(f"Call to {method} failed: {err}") from err
+        except (
+            aiohttp.ClientError,
+            asyncio.CancelledError,
+            TimeoutError,
+            OSError,
+        ) as err:
+            raise MsmpConnectionError(
+                f"Request (ID: {request['id']}) to {method} failed: {err}"
+            ) from err
+        finally:
+            # Something might break in the listener that will clear the pending requests dictionary, so before trying to delete it from the dictionary, we need to check it's still there. Otherwise, it'll throw an exception
+            if request["id"] in self._pending_requests:
+                del self._pending_requests[request["id"]]
 
         if (error := response.get("error")) is not None:
-            raise MsmpRequestError(f"Call to {method} failed: {error}")
+            raise MsmpRequestError(
+                f"Request (ID: {request['id']}) to {method} failed: {error}"
+            )
         return response.get("result")
 
     async def listen(self) -> None:
         """Listens for messages from the WS server and matches them to their corresponding request."""
         while self._ws is not None and not self._ws.closed:
-            msg = await self._ws.receive()
+            try:
+                msg = await self._ws.receive()
+            except (aiohttp.ClientError, asyncio.CancelledError, TimeoutError) as err:
+                _LOGGER.error(
+                    "Something went wrong whilst getting a WS message: %s", err
+                )
+                self.__cancel_pending_requests()
+                break
 
             if msg.type is not aiohttp.WSMsgType.TEXT:
-                _LOGGER.error(f"Connection lost({msg.type.name})")
+                _LOGGER.error("Connection lost (%s)", msg.type.name)
+                self.__cancel_pending_requests()
                 continue
 
             try:
                 data = msg.json()
             except ValueError as err:
-                _LOGGER.error(f"Received invalid JSON ({err})")
+                _LOGGER.error("Received invalid JSON (%s)", err)
                 continue
 
             if not isinstance(data, dict):
-                _LOGGER.error(f"Unexpected response format: {data}")
+                _LOGGER.error("Unexpected response format: %s", type(data))
                 continue
 
+            # Responses without ID are notifications, and for now ignored
             msg_id = data.get("id")
-            if msg_id not in self._pending_requests:
-                _LOGGER.error(
-                    f"Received response for request ID {msg_id} which could not be found."
-                )
-                continue
-
-            if not self._pending_requests[msg_id].done():
+            if (
+                msg_id in self._pending_requests
+                and not self._pending_requests[msg_id].done()
+            ):
                 self._pending_requests[msg_id].set_result(data)
 
     async def close(self) -> None:
@@ -164,5 +195,7 @@ class WsConnection:
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
 
-            if self._ws_listener is not None and not self._ws_listener.done():
-                self._ws_listener.cancel()
+        if self._ws_listener is not None and not self._ws_listener.done():
+            self._ws_listener.cancel()
+
+        self.__cancel_pending_requests()

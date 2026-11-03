@@ -14,6 +14,7 @@ from yarl import URL
 from homeassistant.components.minecraft_server.msmp.exceptions import (
     MsmpAuthError,
     MsmpConnectionError,
+    MsmpRequestError,
 )
 from homeassistant.components.minecraft_server.msmp.ws_connection import WsConnection
 
@@ -45,6 +46,16 @@ class FakeWs:
             extra=None,
         )
 
+    def create_ws_error_response(
+        self, id: int, code: int, message: str
+    ) -> aiohttp.WSMessage:
+        """Create a WS error response object."""
+        return aiohttp.WSMessage(
+            type=aiohttp.WSMsgType.TEXT,
+            data=json.dumps({"id": id, "error": {"code": code, "message": message}}),
+            extra=None,
+        )
+
     async def ws_connect(self, *args, **kwargs):
         """Return connection."""
         self.connected = True
@@ -65,7 +76,17 @@ class FakeWs:
         self, id: int, output: dict[str, Any] | list | None = None
     ) -> None:
         """Create a message to send from the "server" to the WS client."""
-        await self.incoming.put(self.create_ws_response(id, output))
+        await self.send_raw_from_server(self.create_ws_response(id, output))
+
+    async def send_error_from_server(self, id: int, code: int, message: str) -> None:
+        """Create an error message to send from the "server" to the WS client."""
+        await self.send_raw_from_server(
+            self.create_ws_error_response(id, code, message)
+        )
+
+    async def send_raw_from_server(self, response: aiohttp.WSMessage) -> None:
+        """Add a message to send from the "server" to the WS client."""
+        await self.incoming.put(response)
 
     async def receive(self) -> aiohttp.WSMessage:
         """Receiving a message from the server."""
@@ -273,8 +294,8 @@ async def test_build_request_body_uses_incremental_ids(
     ws_connection: WsConnection,
 ) -> None:
     """Test `_build_request_body()` increments request ID automatically."""
-    body1 = ws_connection._build_request_body("minecraft:method1")
-    body2 = ws_connection._build_request_body("minecraft:method2")
+    body1 = ws_connection.build_request_body("minecraft:method1")
+    body2 = ws_connection.build_request_body("minecraft:method2")
 
     assert body1["id"] == 1
     assert body2["id"] == 2
@@ -284,7 +305,7 @@ async def test_build_request_body_without_params(
     ws_connection: WsConnection,
 ) -> None:
     """Test the body doesn't contain the `params` field of no parameters were passed."""
-    body = ws_connection._build_request_body("minecraft:method1")
+    body = ws_connection.build_request_body("minecraft:method1")
 
     assert "params" not in body
 
@@ -293,7 +314,7 @@ async def test_build_request_body_with_params(
     ws_connection: WsConnection,
 ) -> None:
     """Test the body contains the parameters if passed."""
-    body = ws_connection._build_request_body("minecraft:method1", {"params": True})
+    body = ws_connection.build_request_body("minecraft:method1", {"params": True})
 
     assert body["method"] == "minecraft:method1"
     assert body["params"] == {"params": True}
@@ -327,52 +348,27 @@ async def test_connect_other_http_error_is_not_auth_error(
     assert not isinstance(exc_info.value, MsmpAuthError)
 
 
+async def test_cant_call_without_connection(ws_connection: WsConnection) -> None:
+    """Test that `call()` doesn't run when no connection is established."""
+    with pytest.raises(MsmpConnectionError) as exc_info:
+        await ws_connection.call("minecraft:allowlist")
+
+    assert str(exc_info.value) == "Not connected"
+
+
 async def test_single_ws_request_receives_response(ws_connection: WsConnection) -> None:
     """Test a single WS request gets a response."""
     await ws_connection.connect()
+    ws = ws_connection._ws
 
-    await ws_connection._ws.send_from_server(1, ["Player1"])
+    task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
 
-    response = await ws_connection.call("minecraft:allowlist")
+    await ws.wait_for_n_outgoing_messages(1)
+    await ws.send_from_server(1, ["Player1"])
+
+    response = await asyncio.wait_for(task1, timeout=1)
 
     assert response == ["Player1"]
-
-
-@pytest.mark.parametrize("id", [-2, -1, 0, 2, 3, 4])
-async def test_listener_catches_unexpected_ids_2(
-    id: int, ws_connection: WsConnection, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Tests that unexpected IDs get caught.
-
-    Since we're mocking the logger with `patch.object()`, we need to store a reference to the original `_LOGGER.error()` method so that we can invoke it when the mock gets called. I think this test looks very clumsy, but I didn't find any better way to ensure that `_LOGGER.error()` was called without relying on a timeout.
-    """
-
-    # Prepare logger for mocking
-    _LOGGER: logging.Logger = logging.getLogger(
-        "homeassistant.components.minecraft_server"
-    )
-    original_logger = _LOGGER.error
-    logged = asyncio.Event()
-
-    def mark_as_logged(*args, **kwargs):
-        original_logger(*args, **kwargs)
-        logged.set()
-
-    # Connect and set up response
-    await ws_connection.connect()
-    await ws_connection._ws.send_from_server(id, [])
-
-    # Set up a listener
-    with (
-        patch.object(_LOGGER, "error", side_effect=mark_as_logged),
-        caplog.at_level(logging.ERROR, _LOGGER.name),
-    ):
-        call_task = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
-        await asyncio.wait_for(logged.wait(), timeout=1)
-
-        call_task.cancel()
-
-    assert f"Received response for request ID {id}" in caplog.text
 
 
 async def test_sequential_ws_requests_receive_correct_responses(
@@ -382,21 +378,18 @@ async def test_sequential_ws_requests_receive_correct_responses(
     await ws_connection.connect()
     ws = ws_connection._ws
 
-    await ws.send_from_server(1, [])
-    response1 = await ws_connection.call("minecraft:allowlist")
+    requests = "minecraft:allowlist", "minecraft:ban", "minecraft:server/status"
+    responses = [], ["Mean Player1", "Herobrine"], {"Started": True}
 
-    await ws.send_from_server(2, ["Mean Player1", "Herobrine"])
-    response2 = await ws_connection.call("minecraft:ban")
+    for i, request in enumerate(requests):
+        task = asyncio.create_task(ws_connection.call(request))
 
-    await ws.send_from_server(3, {"started": True})
-    response3 = await ws_connection.call("minecraft:server/status")
+        await ws.wait_for_n_outgoing_messages(1)
+        await ws.send_from_server(i + 1, responses[i])
 
-    assert ws.incoming.qsize() == 0
-    assert ws.outgoing.qsize() == 3
+        response = await asyncio.wait_for(task, timeout=1)
 
-    assert response1 == []
-    assert response2 == ["Mean Player1", "Herobrine"]
-    assert response3 == {"started": True}
+        assert response == responses[i]
 
 
 @pytest.mark.parametrize(
@@ -415,6 +408,7 @@ async def test_concurrent_ws_requests_receive_correct_responses(
     task3 = asyncio.create_task(ws_connection.call("minecraft:server/status"))
 
     await ws.wait_for_n_outgoing_messages(3)
+    assert ws_connection.pending_requests_count == 3
 
     responses = [(1, []), (2, ["Mean Player1", "Herobrine"]), (3, {"started": True})]
 
@@ -427,3 +421,241 @@ async def test_concurrent_ws_requests_receive_correct_responses(
     assert response1 == []
     assert response2 == ["Mean Player1", "Herobrine"]
     assert response3 == {"started": True}
+
+
+async def test_concurrent_ws_requests_receive_correct_responses_with_errors(
+    ws_connection: WsConnection,
+) -> None:
+    """Test that each of the multiple WS requests gets the expected response, even when the responses are sent out of order."""
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+    task2 = asyncio.create_task(ws_connection.call("minecraft:ban"))
+    task3 = asyncio.create_task(ws_connection.call("minecraft:server/status"))
+
+    await ws.wait_for_n_outgoing_messages(3)
+    assert ws_connection.pending_requests_count == 3
+
+    await ws.send_from_server(3, {"started": True})
+    await ws.send_from_server(2, ["Mean Player1", "Herobrine"])
+    await ws.send_error_from_server(1, -32602, "Invalid parameters")
+
+    response2, response3 = await asyncio.gather(task2, task3)
+    with pytest.raises(MsmpRequestError) as exc_info:
+        (_response1,) = await asyncio.gather(task1)
+
+    assert response2 == ["Mean Player1", "Herobrine"]
+    assert response3 == {"started": True}
+
+    assert "(ID: 1) to minecraft:allowlist failed" in str(exc_info.value)
+    assert "-32602" in str(exc_info.value)
+    assert "Invalid parameters" in str(exc_info.value)
+
+
+async def test_ws_request_raises_error_on_error_response(
+    ws_connection: WsConnection,
+) -> None:
+    """Test that when the response is an error, an error is raised."""
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+
+    await ws.wait_for_n_outgoing_messages(1)
+    await ws.send_error_from_server(1, -32602, "Invalid parameters")
+
+    with pytest.raises(MsmpRequestError) as exc_info:
+        await asyncio.wait_for(task1, timeout=1)
+
+    assert "(ID: 1) to minecraft:allowlist failed" in str(exc_info.value)
+    assert "-32602" in str(exc_info.value)
+    assert "Invalid parameters" in str(exc_info.value)
+
+
+async def test_ws_request_timeout(ws_connection: WsConnection) -> None:
+    """Test that when the response is an error, an error is raised."""
+    await ws_connection.connect()
+    ws_connection._request_timeout = 0.1
+
+    with pytest.raises(MsmpConnectionError) as exc_info:
+        await ws_connection.call("minecraft:allowlist")
+
+    assert "(ID: 1) to minecraft:allowlist failed" in str(exc_info.value)
+
+
+async def test_connection_lost_cancels_pending_requests(
+    ws_connection: WsConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that when the received message is a CLOSING message, this is logged."""
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+
+    await ws.wait_for_n_outgoing_messages(1)
+    await ws.send_raw_from_server(
+        aiohttp.WSMessage(
+            type=aiohttp.WSMsgType.CLOSING,
+            data=None,
+            extra=None,
+        )
+    )
+    with pytest.raises(MsmpConnectionError) as exc_info:
+        await asyncio.wait_for(task1, timeout=3)
+
+    assert "(ID: 1) to minecraft:allowlist failed" in str(exc_info.value)
+    assert ws_connection.pending_requests_count == 0
+
+
+async def test_connection_lost_gets_logged(
+    ws_connection: WsConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that when the received message is a CLOSING message, this is logged."""
+    _LOGGER: logging.Logger = logging.getLogger(
+        "homeassistant.components.minecraft_server"
+    )
+    original_logger = _LOGGER.error
+    logged = asyncio.Event()
+
+    def mark_as_logged(*args, **kwargs):
+        original_logger(*args, **kwargs)
+        logged.set()
+
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    with (
+        patch.object(_LOGGER, "error", side_effect=mark_as_logged),
+        caplog.at_level(logging.ERROR, _LOGGER.name),
+    ):
+        task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+
+        await ws.wait_for_n_outgoing_messages(1)
+        await ws.send_raw_from_server(
+            aiohttp.WSMessage(
+                type=aiohttp.WSMsgType.CLOSING,
+                data=None,
+                extra=None,
+            )
+        )
+
+        await asyncio.wait_for(logged.wait(), timeout=1)
+        task1.cancel()
+
+    assert "Connection lost (CLOSING)" in caplog.text
+
+
+async def test_invalid_json_gets_logged(
+    ws_connection: WsConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that when the received message isn't in JSON format, this is logged."""
+    _LOGGER: logging.Logger = logging.getLogger(
+        "homeassistant.components.minecraft_server"
+    )
+    original_logger = _LOGGER.error
+    logged = asyncio.Event()
+
+    def mark_as_logged(*args, **kwargs):
+        original_logger(*args, **kwargs)
+        logged.set()
+
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    with (
+        patch.object(_LOGGER, "error", side_effect=mark_as_logged),
+        caplog.at_level(logging.ERROR, _LOGGER.name),
+    ):
+        task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+
+        await ws.wait_for_n_outgoing_messages(1)
+        await ws.send_raw_from_server(
+            aiohttp.WSMessage(
+                type=aiohttp.WSMsgType.TEXT,
+                data="This is not valid JSON syntax",
+                extra=None,
+            )
+        )
+
+        await asyncio.wait_for(logged.wait(), timeout=1)
+        task1.cancel()
+
+    assert "Received invalid JSON" in caplog.text
+
+
+async def test_non_dict_response_gets_logged(
+    ws_connection: WsConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that when the received message isn't a dictionary, this is logged."""
+    _LOGGER: logging.Logger = logging.getLogger(
+        "homeassistant.components.minecraft_server"
+    )
+    original_logger = _LOGGER.error
+    logged = asyncio.Event()
+
+    def mark_as_logged(*args, **kwargs):
+        original_logger(*args, **kwargs)
+        logged.set()
+
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    with (
+        patch.object(_LOGGER, "error", side_effect=mark_as_logged),
+        caplog.at_level(logging.ERROR, _LOGGER.name),
+    ):
+        task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+
+        await ws.wait_for_n_outgoing_messages(1)
+        await ws.send_raw_from_server(
+            aiohttp.WSMessage(
+                type=aiohttp.WSMsgType.TEXT,
+                data='["VALID JSON", "BUT NOT A DICT"]',
+                extra=None,
+            )
+        )
+
+        await asyncio.wait_for(logged.wait(), timeout=1)
+        task1.cancel()
+
+    assert "Unexpected response format" in caplog.text
+
+
+async def test_duplicate_replies_have_no_impact(ws_connection: WsConnection) -> None:
+    """Test that when a response gets sent twice, the future doesn't get resolved twice.
+
+    According to the asyncio documentation, calling `set_result()` multiple times raises an `InvalidStateError`. Thus, if we can reach the end of the test method without an exception being thrown at us, we've successfully ignored the duplicate reply.
+    """
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+
+    await ws.wait_for_n_outgoing_messages(1)
+    await ws.send_from_server(1, ["Player1"])
+    await ws.send_from_server(1, ["Player1"])
+
+    response = await asyncio.wait_for(task1, timeout=1)
+
+    assert response == ["Player1"]
+
+
+async def test_close_connection_with_pending_requests_cancels_requests(
+    ws_connection: WsConnection,
+) -> None:
+    """Test that when the connection is closed whilst there's still pending requests, they get cancelled."""
+    await ws_connection.connect()
+    ws = ws_connection._ws
+
+    task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+
+    await ws.wait_for_n_outgoing_messages(1)
+
+    assert ws_connection.pending_requests_count == 1
+
+    await ws_connection.close()
+
+    assert ws_connection.pending_requests_count == 0
+
+    task1.cancel()
