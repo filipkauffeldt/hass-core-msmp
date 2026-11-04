@@ -121,8 +121,8 @@ class MinecraftServerConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
             try:
-                await client.connect()
-                await client.call("minecraft:server/status")
+                async with client:
+                    await client.call("minecraft:server/status")
             except MsmpAuthError:
                 errors["base"] = "invalid_auth"
             except MsmpConnectionError as error:
