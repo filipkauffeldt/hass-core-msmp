@@ -42,6 +42,7 @@ class WsConnection:
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._ws_listener: asyncio.Task | None = None
         self._pending_requests: dict[int, asyncio.Future] = {}
+        self._connect_lock = asyncio.Lock()
 
         self.__request_id = 0
 
@@ -62,20 +63,25 @@ class WsConnection:
 
     async def connect(self) -> None:
         """Open the WebSocket, authenticating with the bearer token."""
-        if self.connected or self.closed:
-            return
+        async with self._connect_lock:
+            if self.connected:
+                return
+
+            self._ws = await self._open_websocket()
+            self._ws_listener = asyncio.create_task(
+                self.listen(self._ws), name="minecraft_server:wsconnection_listener"
+            )
+
+    async def _open_websocket(self) -> aiohttp.ClientWebSocketResponse:
+        """Open the socket and translate connection failures."""
         try:
             async with asyncio.timeout(self._connection_timeout):
-                self._ws = await self._session.ws_connect(
+                return await self._session.ws_connect(
                     self._url,
                     headers={"Authorization": f"Bearer {self.__secret}"},
                     protocols=(SUBPROTOCOL,),
                 )
-                self._ws_listener = asyncio.create_task(
-                    self.listen(), name="minecraft_server:wsconnection_listener"
-                )
         except aiohttp.WSServerHandshakeError as err:
-            self._ws = None
             if err.status == 401:
                 raise MsmpAuthError(
                     f"Authentication failed for {self._url}: Unauthorized"
@@ -84,7 +90,6 @@ class WsConnection:
                 f"Unable to connect to {self._url}: HTTP {err.status}"
             ) from err
         except (aiohttp.ClientError, TimeoutError, OSError) as err:
-            self._ws = None
             raise MsmpConnectionError(
                 f"Unable to connect to {self._url}: {err}"
             ) from err
@@ -95,10 +100,13 @@ class WsConnection:
 
         return self.__request_id
 
-    def __cancel_pending_requests(self) -> None:
-        """Cancels all pending requests."""
-        for future in self._pending_requests.values():
-            future.cancel()
+    def _fail_pending_requests(self, reason: str) -> None:
+        """Fail every waiting call so callers don't sit out their timeout."""
+        for request_id, future in self._pending_requests.items():
+            if not future.done():
+                future.set_exception(
+                    MsmpConnectionError(f"Request (ID: {request_id}) failed: {reason}")
+                )
 
         self._pending_requests.clear()
 
@@ -126,76 +134,82 @@ class WsConnection:
             raise MsmpConnectionError("Not connected")
 
         request = self.build_request_body(method, params)
+        request_id = request["id"]
+
+        future = asyncio.get_running_loop().create_future()
+        self._pending_requests[request_id] = future
 
         try:
-            future = asyncio.get_running_loop().create_future()
-            self._pending_requests[request["id"]] = future
-
             async with asyncio.timeout(self._request_timeout):
                 await ws.send_json(request)
-                response = await asyncio.wait_for(future, self._request_timeout)
-
-        except (
-            aiohttp.ClientError,
-            asyncio.CancelledError,
-            TimeoutError,
-            OSError,
-        ) as err:
+                response = await future
+        except (aiohttp.ClientError, TimeoutError, OSError) as err:
+            reason = str(err) or type(err).__name__
             raise MsmpConnectionError(
-                f"Request (ID: {request['id']}) to {method} failed: {err}"
+                f"Request (ID: {request_id}) to {method} failed: {reason}"
             ) from err
         finally:
-            # Something might break in the listener that will clear the pending requests dictionary, so before trying to delete it from the dictionary, we need to check it's still there. Otherwise, it'll throw an exception
-            if request["id"] in self._pending_requests:
-                del self._pending_requests[request["id"]]
+            self._pending_requests.pop(request_id, None)
 
-        if (error := response.get("error")) is not None:
+        if (rpc_error := response.get("error")) is not None:
             raise MsmpRequestError(
-                f"Request (ID: {request['id']}) to {method} failed: {error}"
+                f"Request (ID: {request_id}) to {method} failed: {rpc_error}"
             )
+
         return response.get("result")
 
-    async def listen(self) -> None:
-        """Listens for messages from the WS server and matches them to their corresponding request."""
-        while self._ws is not None and not self._ws.closed:
-            try:
-                msg = await self._ws.receive()
-            except (aiohttp.ClientError, asyncio.CancelledError, TimeoutError) as err:
-                _LOGGER.error(
-                    "Something went wrong whilst getting a WS message: %s", err
-                )
-                self.__cancel_pending_requests()
-                break
+    async def listen(self, ws: aiohttp.ClientWebSocketResponse) -> None:
+        """Match incoming replies to pending requests until the socket closes."""
+        try:
+            while not ws.closed:
+                message = await ws.receive()
 
-            if msg.type is not aiohttp.WSMsgType.TEXT:
-                _LOGGER.error("Connection lost (%s)", msg.type.name)
-                self.__cancel_pending_requests()
-                continue
+                match message.type:
+                    case aiohttp.WSMsgType.TEXT:
+                        self._handle_text_message(message)
+                    case (
+                        aiohttp.WSMsgType.CLOSE
+                        | aiohttp.WSMsgType.CLOSING
+                        | aiohttp.WSMsgType.CLOSED
+                    ):
+                        break
+                    case aiohttp.WSMsgType.ERROR:
+                        _LOGGER.error("WebSocket error: %s", message.data)
+                        break
+                    case _:
+                        _LOGGER.warning(
+                            "Ignoring WS message of type %s", message.type.name
+                        )
+        except (aiohttp.ClientError, OSError) as err:
+            _LOGGER.error("WS listener stopped: %s", err)
+        finally:
+            self._fail_pending_requests("connection closed")
 
-            try:
-                data = msg.json()
-            except ValueError as err:
-                _LOGGER.error("Received invalid JSON (%s)", err)
-                continue
+    def _handle_text_message(self, message: aiohttp.WSMessage) -> None:
+        """Hand a reply to the call waiting for it."""
+        try:
+            data = message.json()
+        except ValueError as err:
+            _LOGGER.error("Received invalid JSON (%s)", err)
+            return
 
-            if not isinstance(data, dict):
-                _LOGGER.error("Unexpected response format: %s", type(data))
-                continue
-
-            # Responses without ID are notifications, and for now ignored
-            msg_id = data.get("id")
-            if (
-                msg_id in self._pending_requests
-                and not self._pending_requests[msg_id].done()
-            ):
-                self._pending_requests[msg_id].set_result(data)
+        match data:
+            case {"id": int() as request_id}:
+                future = self._pending_requests.get(request_id)
+                if future is not None and not future.done():
+                    future.set_result(data)
+            case dict():
+                # Notifications have no ID and are not handled yet
+                _LOGGER.debug("Ignoring message without a usable request ID")
+            case _:
+                _LOGGER.error("Unexpected response format: %s", type(data).__name__)
 
     async def close(self) -> None:
         """Close the WebSocket connection cleanly."""
         if self._ws is not None and not self._ws.closed:
             await self._ws.close()
 
-        if self._ws_listener is not None and not self._ws_listener.done():
+        if self._ws_listener is not None:
+            # The listener's `finally` fails any pending requests
             self._ws_listener.cancel()
-
-        self.__cancel_pending_requests()
+            self._ws_listener = None

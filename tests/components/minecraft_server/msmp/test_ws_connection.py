@@ -266,18 +266,21 @@ async def test_close_without_connect(
     assert not ws_connection.closed
 
 
-async def test_cannot_reconnect_after_close(
+async def test_connect_after_close_opens_a_new_socket(
     ws_connection: WsConnection, session: MagicMock
 ) -> None:
-    """Test the client cannot connect again after being closed."""
+    """Test a closed connection can connect again and serve calls."""
     await ws_connection.connect()
     await ws_connection.close()
+    new_ws = FakeWs()
+    session.ws_connect.return_value = new_ws
 
     await ws_connection.connect()
 
-    assert session.ws_connect.await_count == 1
-    assert not ws_connection.connected
-    assert ws_connection.closed
+    call_task = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+    request = await new_ws.outgoing.get()
+    await new_ws.send_from_server(request["id"], ["Player1"])
+    assert await asyncio.wait_for(call_task, timeout=1) == ["Player1"]
 
 
 async def test_connected_reflects_socket_closed_state(
@@ -484,10 +487,10 @@ async def test_ws_request_timeout(ws_connection: WsConnection) -> None:
     assert "(ID: 1) to minecraft:allowlist failed" in str(exc_info.value)
 
 
-async def test_connection_lost_cancels_pending_requests(
-    ws_connection: WsConnection, caplog: pytest.LogCaptureFixture
+async def test_closing_message_fails_pending_requests(
+    ws_connection: WsConnection,
 ) -> None:
-    """Test that when the received message is a CLOSING message, this is logged."""
+    """Test that a closing message fails the calls that are waiting for a reply."""
     await ws_connection.connect()
     ws = ws_connection._ws
 
@@ -504,46 +507,8 @@ async def test_connection_lost_cancels_pending_requests(
     with pytest.raises(MsmpConnectionError) as exc_info:
         await asyncio.wait_for(task1, timeout=3)
 
-    assert "(ID: 1) to minecraft:allowlist failed" in str(exc_info.value)
+    assert "Request (ID: 1) failed: connection closed" in str(exc_info.value)
     assert ws_connection.pending_requests_count == 0
-
-
-async def test_connection_lost_gets_logged(
-    ws_connection: WsConnection, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Test that when the received message is a CLOSING message, this is logged."""
-    _LOGGER: logging.Logger = logging.getLogger(
-        "homeassistant.components.minecraft_server"
-    )
-    original_logger = _LOGGER.error
-    logged = asyncio.Event()
-
-    def mark_as_logged(*args, **kwargs):
-        original_logger(*args, **kwargs)
-        logged.set()
-
-    await ws_connection.connect()
-    ws = ws_connection._ws
-
-    with (
-        patch.object(_LOGGER, "error", side_effect=mark_as_logged),
-        caplog.at_level(logging.ERROR, _LOGGER.name),
-    ):
-        task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
-
-        await ws.wait_for_n_outgoing_messages(1)
-        await ws.send_raw_from_server(
-            aiohttp.WSMessage(
-                type=aiohttp.WSMsgType.CLOSING,
-                data=None,
-                extra=None,
-            )
-        )
-
-        await asyncio.wait_for(logged.wait(), timeout=1)
-        task1.cancel()
-
-    assert "Connection lost (CLOSING)" in caplog.text
 
 
 async def test_invalid_json_gets_logged(
@@ -641,21 +606,124 @@ async def test_duplicate_replies_have_no_impact(ws_connection: WsConnection) -> 
     assert response == ["Player1"]
 
 
-async def test_close_connection_with_pending_requests_cancels_requests(
-    ws_connection: WsConnection,
+async def test_close_fails_pending_requests(
+    ws: FakeWs, ws_connection: WsConnection
 ) -> None:
-    """Test that when the connection is closed whilst there's still pending requests, they get cancelled."""
+    """Test that closing the connection fails a call that is waiting for a reply."""
     await ws_connection.connect()
-    ws = ws_connection._ws
-
-    task1 = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
-
-    await ws.wait_for_n_outgoing_messages(1)
-
-    assert ws_connection.pending_requests_count == 1
+    call_task = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+    await ws.outgoing.get()
 
     await ws_connection.close()
 
+    with pytest.raises(MsmpConnectionError, match=r"Request \(ID: 1\) failed"):
+        await asyncio.wait_for(call_task, timeout=1)
     assert ws_connection.pending_requests_count == 0
 
-    task1.cancel()
+
+async def test_cancelled_call_propagates_cancellation(
+    ws: FakeWs, ws_connection: WsConnection
+) -> None:
+    """Test that cancelling the calling task is not reported as a connection error."""
+    await ws_connection.connect()
+    call_task = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+    await ws.outgoing.get()
+
+    call_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await call_task
+    assert ws_connection.pending_requests_count == 0
+
+
+@pytest.mark.parametrize(
+    "unmatched_message",
+    [
+        pytest.param('{"id": []}', id="unhashable-id"),
+        pytest.param('{"id": null}', id="null-id"),
+        pytest.param('{"id": 99, "result": []}', id="unknown-id"),
+        pytest.param(
+            '{"jsonrpc": "2.0", "method": "minecraft:notification/players/joined",'
+            ' "params": [{"id": "853c80ef-3c37-49fd-aa49-938b674adae6",'
+            ' "name": "jeb_"}]}',
+            id="notification",
+        ),
+        pytest.param("not json", id="invalid-json"),
+        pytest.param('["not", "a", "dict"]', id="non-dict"),
+    ],
+)
+async def test_unmatched_message_does_not_stop_listener(
+    unmatched_message: str, ws: FakeWs, ws_connection: WsConnection
+) -> None:
+    """Test that a message matching no request does not stop later replies."""
+    await ws_connection.connect()
+    call_task = asyncio.create_task(ws_connection.call("minecraft:allowlist"))
+    request = await ws.outgoing.get()
+
+    await ws.send_raw_from_server(
+        aiohttp.WSMessage(
+            type=aiohttp.WSMsgType.TEXT, data=unmatched_message, extra=None
+        )
+    )
+    await ws.send_from_server(request["id"], ["Player1"])
+
+    assert await asyncio.wait_for(call_task, timeout=1) == ["Player1"]
+
+
+@pytest.fixture
+async def fast_timeout_connection(
+    session: MagicMock,
+) -> AsyncGenerator[WsConnection]:
+    """Return a connected WsConnection whose requests time out quickly."""
+    connection = WsConnection(session, HOST, PORT, SECRET, request_timeout=0.05)
+    await connection.connect()
+
+    yield connection
+
+    await connection.close()
+
+
+async def test_late_reply_after_timeout_is_ignored(
+    ws: FakeWs, fast_timeout_connection: WsConnection
+) -> None:
+    """Test that a reply arriving after its call timed out does not break later calls."""
+    with pytest.raises(MsmpConnectionError, match=r"Request \(ID: 1\)"):
+        await fast_timeout_connection.call("minecraft:allowlist")
+    timed_out_request = await ws.outgoing.get()
+    assert timed_out_request["id"] == 1
+
+    await ws.send_from_server(1, ["Player1"])
+    call_task = asyncio.create_task(fast_timeout_connection.call("minecraft:ban"))
+    request = await ws.outgoing.get()
+    await ws.send_from_server(request["id"], ["Herobrine"])
+
+    assert await asyncio.wait_for(call_task, timeout=1) == ["Herobrine"]
+    assert fast_timeout_connection.pending_requests_count == 0
+
+
+async def test_close_logs_no_error(
+    ws_connection: WsConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that a normal close does not log at error level."""
+    await ws_connection.connect()
+
+    with caplog.at_level(logging.ERROR):
+        await ws_connection.close()
+
+    assert caplog.records == []
+
+
+async def test_concurrent_connects_open_one_socket(
+    ws: FakeWs, session: MagicMock, ws_connection: WsConnection
+) -> None:
+    """Test that two concurrent connect calls share one socket."""
+
+    async def connect_after_yielding(*args: object, **kwargs: object) -> FakeWs:
+        await asyncio.sleep(0)
+        return ws
+
+    session.ws_connect.side_effect = connect_after_yielding
+
+    await asyncio.gather(ws_connection.connect(), ws_connection.connect())
+
+    assert session.ws_connect.call_count == 1
