@@ -7,6 +7,8 @@ from typing import Any, Self
 
 import aiohttp
 
+from .exceptions import MsmpRequestError
+from .models import MsmpServerStatus
 from .ws_connection import (
     DEFAULT_CONNECTION_TIMEOUT,
     DEFAULT_REQUEST_TIMEOUT,
@@ -58,6 +60,20 @@ class MsmpClient:
         or the call times out.
         """
         return await self._connection.call(method, params)
+
+    async def get_server_status(self) -> MsmpServerStatus:
+        """Return the state of the server.
+
+        Raises MsmpRequestError if the server's answer is not a valid status.
+        """
+        result = await self.call("minecraft:server/status")
+
+        try:
+            return MsmpServerStatus.from_result(result)
+        except (KeyError, TypeError) as err:
+            raise MsmpRequestError(
+                f"Unexpected server status response: {result!r}"
+            ) from err
 
     async def close(self) -> None:
         """Close the WebSocket cleanly. Safe to call more than once."""

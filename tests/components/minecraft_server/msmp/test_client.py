@@ -14,6 +14,10 @@ from homeassistant.components.minecraft_server.msmp.exceptions import (
     MsmpConnectionError,
     MsmpRequestError,
 )
+from homeassistant.components.minecraft_server.msmp.models import (
+    MsmpPlayer,
+    MsmpServerStatus,
+)
 
 from .test_ws_connection import FakeWs
 
@@ -270,3 +274,65 @@ async def test_call_raises_request_error_with_call_id_when_server_answers_with_e
         match=rf"Request \(ID: {request['id']}\) to minecraft:allowlist failed.*Invalid parameters",
     ):
         await asyncio.wait_for(call, timeout=1)
+
+
+async def test_get_server_status_returns_typed_status(
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test the status result is returned as a typed status."""
+    client, fake_ws = fake_ws_client
+    status_call = asyncio.create_task(client.get_server_status())
+    request = await fake_ws.outgoing.get()
+
+    await fake_ws.send_from_server(
+        request["id"],
+        {
+            "started": True,
+            "version": {"name": "1.21.9", "protocol": 773},
+            "players": [{"id": "853c80ef-3c37-49fd-aa49-938b674adae6", "name": "jeb_"}],
+        },
+    )
+
+    assert request["method"] == "minecraft:server/status"
+    assert await asyncio.wait_for(status_call, timeout=1) == MsmpServerStatus(
+        started=True,
+        version_name="1.21.9",
+        protocol_version=773,
+        players=[MsmpPlayer(id="853c80ef-3c37-49fd-aa49-938b674adae6", name="jeb_")],
+    )
+
+
+@pytest.mark.parametrize(
+    "malformed_result",
+    [
+        pytest.param({}, id="empty-object"),
+        pytest.param({"started": True, "players": []}, id="missing-version"),
+        pytest.param(
+            {"started": True, "version": {"name": "1.21.9"}, "players": []},
+            id="missing-protocol",
+        ),
+        pytest.param(
+            {
+                "started": True,
+                "version": {"name": "1.21.9", "protocol": 773},
+                "players": [{"name": "jeb_"}],
+            },
+            id="player-without-id",
+        ),
+        pytest.param(["not", "an", "object"], id="not-an-object"),
+        pytest.param(None, id="no-result"),
+    ],
+)
+async def test_get_server_status_raises_request_error_when_result_is_malformed(
+    malformed_result: dict[str, object] | list[str] | None,
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test a status result that does not fit the status shape is a request error."""
+    client, fake_ws = fake_ws_client
+    status_call = asyncio.create_task(client.get_server_status())
+    request = await fake_ws.outgoing.get()
+
+    await fake_ws.send_from_server(request["id"], malformed_result)
+
+    with pytest.raises(MsmpRequestError, match="Unexpected server status response"):
+        await asyncio.wait_for(status_call, timeout=1)
