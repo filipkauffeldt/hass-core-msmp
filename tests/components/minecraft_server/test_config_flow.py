@@ -55,6 +55,13 @@ async def test_full_flow_java(hass: HomeAssistant) -> None:
             user_input=USER_INPUT,
         )
 
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "management"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={}
+        )
+
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert result["title"] == USER_INPUT[CONF_ADDRESS]
         assert result["data"][CONF_ADDRESS] == TEST_ADDRESS
@@ -285,6 +292,13 @@ async def test_recovery_java(hass: HomeAssistant) -> None:
         result2 = await hass.config_entries.flow.async_configure(
             flow_id=result["flow_id"], user_input=USER_INPUT
         )
+        assert result2["type"] is FlowResultType.FORM
+        assert result2["step_id"] == "management"
+
+        result2 = await hass.config_entries.flow.async_configure(
+            result2["flow_id"], user_input={}
+        )
+
         assert result2["type"] is FlowResultType.CREATE_ENTRY
         assert result2["title"] == USER_INPUT[CONF_ADDRESS]
         assert result2["data"][CONF_ADDRESS] == TEST_ADDRESS
