@@ -143,21 +143,6 @@ async def test_connect_failure_does_not_leak_secret(
     assert SECRET not in str(exc_info.value)
 
 
-async def test_connect_timeout(session: MagicMock) -> None:
-    """Test a hanging handshake is cut off by the connect timeout."""
-
-    async def _hang(*args: object, **kwargs: object) -> None:
-        await asyncio.sleep(10)
-
-    session.ws_connect.side_effect = _hang
-    client = MsmpClient(session, HOST, PORT, SECRET, connect_timeout=0.01)
-
-    with pytest.raises(MsmpConnectionError):
-        await client.connect()
-
-    assert not client.connected
-
-
 async def test_close_closes_socket_once(client: MsmpClient, ws: MagicMock) -> None:
     """Test close shuts the socket and is safe to call repeatedly."""
     await client.connect()

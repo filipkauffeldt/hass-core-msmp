@@ -9,11 +9,7 @@ import aiohttp
 
 from .exceptions import MsmpRequestError
 from .models import MsmpServerStatus
-from .ws_connection import (
-    DEFAULT_CONNECTION_TIMEOUT,
-    DEFAULT_REQUEST_TIMEOUT,
-    WsConnection,
-)
+from .ws_connection import WsConnection
 
 
 class MsmpClient:
@@ -27,19 +23,9 @@ class MsmpClient:
         secret: str,
         *,
         tls: bool = False,
-        connect_timeout: float = DEFAULT_CONNECTION_TIMEOUT,
-        request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
         """Initialize the client. The session is owned by the caller."""
-        self._connection = WsConnection(
-            session,
-            host,
-            port,
-            secret,
-            tls=tls,
-            connection_timeout=connect_timeout,
-            request_timeout=request_timeout,
-        )
+        self._connection = WsConnection(session, host, port, secret, tls=tls)
 
     @property
     def connected(self) -> bool:
