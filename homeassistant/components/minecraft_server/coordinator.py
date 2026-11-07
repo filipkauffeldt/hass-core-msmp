@@ -13,9 +13,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import (
     MinecraftServer,
     MinecraftServerAddressError,
-    MinecraftServerConnectionError,
     MinecraftServerData,
-    MinecraftServerNotInitializedError,
+    MinecraftServerDataError,
     MinecraftServerType,
 )
 
@@ -69,8 +68,5 @@ class MinecraftServerCoordinator(DataUpdateCoordinator[MinecraftServerData]):
         """Get updated data from the server."""
         try:
             return await self._api.async_get_data()
-        except (
-            MinecraftServerConnectionError,
-            MinecraftServerNotInitializedError,
-        ) as error:
+        except MinecraftServerDataError as error:
             raise UpdateFailed(error) from error

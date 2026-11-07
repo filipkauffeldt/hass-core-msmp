@@ -55,6 +55,22 @@ def v1_mock_config_entry() -> MockConfigEntry:
     )
 
 
+@pytest.fixture
+def v2_mock_config_entry() -> MockConfigEntry:
+    """Create mock config entry with version 2."""
+    return MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=None,
+        entry_id=TEST_CONFIG_ENTRY_ID,
+        data={
+            CONF_NAME: DEFAULT_NAME,
+            CONF_HOST: TEST_HOST,
+            CONF_PORT: TEST_PORT,
+        },
+        version=2,
+    )
+
+
 def create_v1_mock_device_entry(hass: HomeAssistant, config_entry_id: str) -> str:
     """Create mock device entry with version 1."""
     device_registry = dr.async_get(hass)
@@ -270,6 +286,37 @@ async def test_entry_migration(
     assert entity_entry.unique_id == expected_uid
 
 
+async def test_entry_migration_from_v2(
+    hass: HomeAssistant, v2_mock_config_entry: MockConfigEntry
+) -> None:
+    """Test migration of an existing version 2 entry to version 3."""
+
+    v2_mock_config_entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "homeassistant.components.minecraft_server.api.JavaServer.async_lookup",
+            return_value=JavaServer(host=TEST_HOST, port=TEST_PORT),
+        ),
+        patch(
+            "homeassistant.components.minecraft_server.api.JavaServer.async_status",
+            return_value=TEST_JAVA_STATUS_RESPONSE,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(v2_mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    migrated_config_entry = v2_mock_config_entry
+
+    assert migrated_config_entry.unique_id is None
+    assert migrated_config_entry.data == {
+        CONF_NAME: DEFAULT_NAME,
+        CONF_ADDRESS: TEST_HOST,
+    }
+    assert migrated_config_entry.version == 3
+    assert migrated_config_entry.state is ConfigEntryState.LOADED
+
+
 async def test_entry_migration_host_only(
     hass: HomeAssistant, v1_mock_config_entry: MockConfigEntry
 ) -> None:
@@ -336,3 +383,25 @@ async def test_entry_migration_v3_failure(
     # Test config entry.
     assert v1_mock_config_entry.version == 2
     assert v1_mock_config_entry.state is ConfigEntryState.MIGRATION_ERROR
+
+
+async def test_entry_migration_v3_failure_from_v2(
+    hass: HomeAssistant, v2_mock_config_entry: MockConfigEntry
+) -> None:
+    """Test failed entry migration from version 2 to 3."""
+    v2_mock_config_entry.add_to_hass(hass)
+
+    # Trigger migration.
+    with patch(
+        "homeassistant.components.minecraft_server.api.JavaServer.async_lookup",
+        side_effect=[
+            ValueError,  # async_migrate_entry
+            ValueError,  # async_migrate_entry
+        ],
+    ):
+        assert not await hass.config_entries.async_setup(v2_mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    # Test config entry.
+    assert v2_mock_config_entry.version == 2
+    assert v2_mock_config_entry.state is ConfigEntryState.MIGRATION_ERROR
