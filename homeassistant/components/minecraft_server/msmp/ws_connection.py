@@ -58,7 +58,7 @@ class WsConnection:
 
     @property
     def closed(self) -> bool:
-        """Return True iff the WS connection is closed."""
+        """Return True if the WebSocket has been closed."""
         return self._ws is not None and self._ws.closed
 
     async def connect(self) -> None:
