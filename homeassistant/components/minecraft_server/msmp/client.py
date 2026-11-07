@@ -9,7 +9,7 @@ import aiohttp
 
 from .exceptions import MsmpRequestError
 from .models import MsmpServerStatus
-from .ws_connection import WsConnection
+from .ws_connection import DEFAULT_TLS, WsConnection
 
 
 class MsmpClient:
@@ -22,7 +22,7 @@ class MsmpClient:
         port: int,
         secret: str,
         *,
-        tls: bool = False,
+        tls: bool = DEFAULT_TLS,
     ) -> None:
         """Initialize the client. The session is owned by the caller."""
         self._connection = WsConnection(session, host, port, secret, tls=tls)

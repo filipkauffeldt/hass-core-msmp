@@ -10,6 +10,7 @@ from .. import _LOGGER
 from .exceptions import MsmpAuthError, MsmpConnectionError, MsmpRequestError
 
 SUBPROTOCOL = "minecraft-v1"
+DEFAULT_TLS = False
 DEFAULT_CONNECTION_TIMEOUT = 10
 DEFAULT_REQUEST_TIMEOUT = 10
 
@@ -24,7 +25,7 @@ class WsConnection:
         port: int,
         secret: str,
         *,
-        tls: bool = False,
+        tls: bool = DEFAULT_TLS,
         connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:

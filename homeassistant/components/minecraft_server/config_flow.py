@@ -30,6 +30,7 @@ from .const import (
 )
 from .msmp.client import MsmpClient
 from .msmp.exceptions import MsmpAuthError, MsmpConnectionError, MsmpRequestError
+from .msmp.ws_connection import DEFAULT_TLS
 
 DEFAULT_ADDRESS = "localhost:25565"
 
@@ -205,7 +206,7 @@ class MinecraftServerConfigFlow(ConfigFlow, domain=DOMAIN):
                     ),
                     probatio.Required(
                         CONF_MANAGEMENT_TLS,
-                        default=user_input.get(CONF_MANAGEMENT_TLS, False),
+                        default=user_input.get(CONF_MANAGEMENT_TLS, DEFAULT_TLS),
                     ): BooleanSelector(),
                 }
             ),
