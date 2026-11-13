@@ -8,7 +8,7 @@ from typing import Any, Self
 import aiohttp
 
 from .exceptions import MsmpRequestError
-from .models import MsmpServerStatus
+from .models import MsmpGameMode, MsmpServerStatus
 from .ws_connection import DEFAULT_TLS, WsConnection
 
 
@@ -59,6 +59,20 @@ class MsmpClient:
         except (KeyError, TypeError) as err:
             raise MsmpRequestError(
                 f"Unexpected server status response: {result!r}"
+            ) from err
+
+    async def get_game_mode(self) -> MsmpGameMode:
+        """Return the game mode.
+
+        Raises MsmpRequestError if the server's answer is not a valid game mode.
+        """
+        result = await self.call("minecraft:serversettings/game_mode")
+
+        try:
+            return MsmpGameMode.from_result(result)
+        except (KeyError, TypeError) as err:
+            raise MsmpRequestError(
+                f"Unexpected server game mode response: {result!r}"
             ) from err
 
     async def close(self) -> None:
