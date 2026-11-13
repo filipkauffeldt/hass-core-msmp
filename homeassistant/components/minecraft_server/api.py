@@ -157,7 +157,7 @@ class MinecraftServer:
         if isinstance(status_response, JavaStatusResponse):
             management: dict[str, Any] | None = None
             if self._client is not None:
-                management = {"server_status": self._client.get_server_status()}
+                management = {"server_status": await self._client.get_server_status()}
 
             data = self._extract_java_data(status_response, management)
         elif isinstance(status_response, BedrockStatusResponse):

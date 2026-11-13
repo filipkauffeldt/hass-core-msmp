@@ -60,6 +60,9 @@
       "motd": {
         "name": "World message"
       },
+      "msmp_protocol_version": {
+        "name": "MSMP Protocol version"
+      },
       "players_max": {
         "name": "Players max"
       },

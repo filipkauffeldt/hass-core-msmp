@@ -32,6 +32,8 @@ class MsmpServerStatus:
     @classmethod
     def from_result(cls, result: dict[str, Any]) -> Self:
         """Build the status from the method's result."""
+        if "players" not in result:
+            result["players"] = []
         return cls(
             started=result["started"],
             version_name=result["version"]["name"],
