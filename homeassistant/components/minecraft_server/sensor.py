@@ -211,6 +211,18 @@ class MinecraftServerSensorEntity(MinecraftServerEntity, SensorEntity):
         self._attr_unique_id = f"{config_entry.entry_id}-{description.key}"
         self._update_properties()
 
+    @property
+    @override
+    def available(self) -> bool:
+        """Return if the entity is available."""
+        if self.entity_description.key == KEY_MSMP_GAME_MODE:
+            return (
+                super().available
+                and self.coordinator.data is not None
+                and self.coordinator.data.management is not None
+            )
+        return super().available
+
     @callback
     @override
     def _handle_coordinator_update(self) -> None:
