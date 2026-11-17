@@ -289,6 +289,23 @@ async def test_get_server_status_returns_typed_status(
     )
 
 
+async def test_get_server_status_without_players(
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test a status result without players is a status with no players."""
+    client, fake_ws = fake_ws_client
+    status_call = asyncio.create_task(client.get_server_status())
+    request = await fake_ws.outgoing.get()
+
+    await fake_ws.send_from_server(
+        request["id"], {"started": True, "version": {"name": "26.3", "protocol": 777}}
+    )
+
+    assert await asyncio.wait_for(status_call, timeout=1) == MsmpServerStatus(
+        started=True, version_name="26.3", protocol_version=777, players=[]
+    )
+
+
 async def test_get_game_mode_returns_typed_game_mode(
     fake_ws_client: tuple[MsmpClient, FakeWs],
 ) -> None:
