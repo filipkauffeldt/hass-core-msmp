@@ -30,6 +30,7 @@ from homeassistant.components.minecraft_server.msmp.exceptions import (
 from homeassistant.components.minecraft_server.msmp.models import (
     MsmpClientResponse,
     MsmpGameMode,
+    MsmpGameModeName,
     MsmpServerSettings,
     MsmpServerStatus,
 )
@@ -87,7 +88,7 @@ def mock_msmp_client() -> Generator[MagicMock]:
                 players=[],
             ),
             server_settings=MsmpServerSettings(
-                game_mode=MsmpGameMode(game_mode="survival")
+                game_mode=MsmpGameMode(game_mode=MsmpGameModeName.SURVIVAL)
             ),
         )
         yield client_cls

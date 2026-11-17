@@ -16,6 +16,7 @@ from homeassistant.components.minecraft_server.msmp.exceptions import (
 )
 from homeassistant.components.minecraft_server.msmp.models import (
     MsmpGameMode,
+    MsmpGameModeName,
     MsmpPlayer,
     MsmpServerStatus,
 )
@@ -300,8 +301,31 @@ async def test_get_game_mode_returns_typed_game_mode(
 
     assert request["method"] == "minecraft:serversettings/game_mode"
     assert await asyncio.wait_for(game_mode_call, timeout=1) == MsmpGameMode(
-        game_mode="survival"
+        game_mode=MsmpGameModeName.SURVIVAL
     )
+
+
+@pytest.mark.parametrize(
+    "malformed_result",
+    [
+        pytest.param("hardcore", id="unknown-game-mode"),
+        pytest.param({"mode": "survival"}, id="wrapped-in-object"),
+        pytest.param(None, id="no-result"),
+    ],
+)
+async def test_get_game_mode_invalid_result(
+    malformed_result: str | dict[str, str] | None,
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test a result that is not one of the protocol's game modes is a request error."""
+    client, fake_ws = fake_ws_client
+    game_mode_call = asyncio.create_task(client.get_game_mode())
+    request = await fake_ws.outgoing.get()
+
+    await fake_ws.send_from_server(request["id"], malformed_result)
+
+    with pytest.raises(MsmpRequestError, match="Unexpected server game mode response"):
+        await asyncio.wait_for(game_mode_call, timeout=1)
 
 
 @pytest.mark.parametrize(

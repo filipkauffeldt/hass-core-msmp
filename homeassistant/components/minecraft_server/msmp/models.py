@@ -4,6 +4,7 @@ This module must not import anything from Home Assistant.
 """
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Self
 
 
@@ -57,13 +58,25 @@ class MsmpServerStatus:
         )
 
 
+class MsmpGameModeName(StrEnum):
+    """The game modes the protocol defines."""
+
+    SURVIVAL = "survival"
+    CREATIVE = "creative"
+    ADVENTURE = "adventure"
+    SPECTATOR = "spectator"
+
+
 @dataclass
 class MsmpGameMode:
     """The game mode of the server, as returned by `minecraft:serversettings/game_mode`."""
 
-    game_mode: str
+    game_mode: MsmpGameModeName
 
     @classmethod
     def from_result(cls, result: str) -> Self:
-        """Build the game mode from the method's result."""
-        return cls(game_mode=result)
+        """Build the game mode from the method's result.
+
+        Raises ValueError if the result is not one of the protocol's game modes.
+        """
+        return cls(game_mode=MsmpGameModeName(result))

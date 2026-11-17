@@ -75,7 +75,7 @@ class MsmpClient:
 
         try:
             return MsmpGameMode.from_result(result)
-        except (KeyError, TypeError) as err:
+        except ValueError as err:
             raise MsmpRequestError(
                 f"Unexpected server game mode response: {result!r}"
             ) from err
