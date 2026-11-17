@@ -15,6 +15,7 @@ from homeassistant.components.minecraft_server.msmp.exceptions import (
     MsmpRequestError,
 )
 from homeassistant.components.minecraft_server.msmp.models import (
+    MsmpGameMode,
     MsmpPlayer,
     MsmpServerStatus,
 )
@@ -284,6 +285,22 @@ async def test_get_server_status_returns_typed_status(
         version_name="1.21.9",
         protocol_version=773,
         players=[MsmpPlayer(id="853c80ef-3c37-49fd-aa49-938b674adae6", name="jeb_")],
+    )
+
+
+async def test_get_game_mode_returns_typed_game_mode(
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test the game mode result is returned as a typed game mode."""
+    client, fake_ws = fake_ws_client
+    game_mode_call = asyncio.create_task(client.get_game_mode())
+    request = await fake_ws.outgoing.get()
+
+    await fake_ws.send_from_server(request["id"], "survival")
+
+    assert request["method"] == "minecraft:serversettings/game_mode"
+    assert await asyncio.wait_for(game_mode_call, timeout=1) == MsmpGameMode(
+        game_mode="survival"
     )
 
 
