@@ -8,9 +8,15 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 
+from .const import CONF_MANAGEMENT_HOST, CONF_MANAGEMENT_SECRET
 from .coordinator import MinecraftServerConfigEntry
 
-TO_REDACT: Iterable[Any] = {CONF_ADDRESS, "players_list"}
+TO_REDACT: Iterable[Any] = {
+    CONF_ADDRESS,
+    CONF_MANAGEMENT_HOST,
+    CONF_MANAGEMENT_SECRET,
+    "players_list",
+}
 
 
 async def async_get_config_entry_diagnostics(
