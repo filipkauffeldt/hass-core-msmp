@@ -128,15 +128,17 @@ class MinecraftServerConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
             try:
-                async with client:
-                    await client.get_server_status()
+                await client.connect()
+                await client.get_server_status()
             except MsmpAuthError:
                 errors["base"] = "invalid_auth"
             except MsmpConnectionError as error:
                 _LOGGER.debug("Management connection failed: %s", error)
                 errors["base"] = "management_cannot_connect"
             except MsmpRequestError as error:
-                _LOGGER.debug("Management status request failed: %s", error)
+                _LOGGER.debug(
+                    "Management connection established, but request failed: %s", error
+                )
                 errors["base"] = "management_request_failed"
             else:
                 _LOGGER.debug("Management connection to %s:%s succeeded", host, port)

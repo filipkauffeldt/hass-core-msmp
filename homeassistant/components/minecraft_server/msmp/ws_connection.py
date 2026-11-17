@@ -1,13 +1,15 @@
 """WS connection wrapper to be used by the MsmpClient."""
 
 import asyncio
+import logging
 from typing import Any
 
 import aiohttp
 from yarl import URL
 
-from .. import _LOGGER
 from .exceptions import MsmpAuthError, MsmpConnectionError, MsmpRequestError
+
+_LOGGER = logging.getLogger(__name__)
 
 SUBPROTOCOL = "minecraft-v1"
 DEFAULT_TLS = False

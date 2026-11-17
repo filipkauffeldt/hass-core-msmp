@@ -516,7 +516,7 @@ async def test_invalid_json_gets_logged(
 ) -> None:
     """Test that when the received message isn't in JSON format, this is logged."""
     _LOGGER: logging.Logger = logging.getLogger(
-        "homeassistant.components.minecraft_server"
+        "homeassistant.components.minecraft_server.msmp.ws_connection"
     )
     original_logger = _LOGGER.error
     logged = asyncio.Event()
@@ -554,7 +554,7 @@ async def test_non_dict_response_gets_logged(
 ) -> None:
     """Test that when the received message isn't a dictionary, this is logged."""
     _LOGGER: logging.Logger = logging.getLogger(
-        "homeassistant.components.minecraft_server"
+        "homeassistant.components.minecraft_server.msmp.ws_connection"
     )
     original_logger = _LOGGER.error
     logged = asyncio.Event()

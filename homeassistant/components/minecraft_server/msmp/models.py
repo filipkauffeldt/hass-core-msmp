@@ -8,6 +8,21 @@ from typing import Any, Self
 
 
 @dataclass
+class MsmpClientResponse:
+    """Contains all responses the MSMP client can produce."""
+
+    server_status: MsmpServerStatus
+    server_settings: MsmpServerSettings
+
+
+@dataclass
+class MsmpServerSettings:
+    """The `minecraft:serversettings` group contains many endpoints; this class groups those together."""
+
+    game_mode: MsmpGameMode
+
+
+@dataclass
 class MsmpPlayer:
     """A player on the server."""
 
@@ -36,5 +51,19 @@ class MsmpServerStatus:
             started=result["started"],
             version_name=result["version"]["name"],
             protocol_version=result["version"]["protocol"],
-            players=[MsmpPlayer.from_result(player) for player in result["players"]],
+            players=[MsmpPlayer.from_result(player) for player in result["players"]]
+            if "players" in result
+            else [],
         )
+
+
+@dataclass
+class MsmpGameMode:
+    """The game mode of the server, as returned by `minecraft:serversettings/game_mode`."""
+
+    game_mode: str
+
+    @classmethod
+    def from_result(cls, result: str) -> Self:
+        """Build the game mode from the method's result."""
+        return cls(game_mode=result)

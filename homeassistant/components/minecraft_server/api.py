@@ -14,6 +14,9 @@ from mcstatus.responses import (
 
 from homeassistant.core import HomeAssistant
 
+from .msmp.client import MsmpClient
+from .msmp.models import MsmpClientResponse
+
 _LOGGER = logging.getLogger(__name__)
 
 LOOKUP_TIMEOUT: float = 10
@@ -35,6 +38,9 @@ class MinecraftServerData:
 
     # Data available only in 'Java Edition'
     players_list: list[str] | None = None
+
+    # Data from management protocol (only possible in 'Java Edition')
+    management: MsmpClientResponse | None = None
 
     # Data available only in 'Bedrock Edition'
     edition: str | None = None
@@ -72,13 +78,18 @@ class MinecraftServer:
     _server: BedrockServer | JavaServer | LegacyServer | None
 
     def __init__(
-        self, hass: HomeAssistant, server_type: MinecraftServerType, address: str
+        self,
+        hass: HomeAssistant,
+        server_type: MinecraftServerType,
+        address: str,
+        client: MsmpClient | None = None,
     ) -> None:
         """Initialize server instance."""
         self._server = None
         self._hass = hass
         self._server_type = server_type
         self._address = address
+        self._client = client
 
     async def async_initialize(self) -> None:
         """Perform async initialization of server instance."""
@@ -103,6 +114,12 @@ class MinecraftServer:
             self._server_type,
             self._address,
         )
+
+        if self._client is not None:
+            # Throws `MsmpAuthError` or `MsmpConnectionError`
+            # if something went wrong with the setup. Propagates to
+            # the coordinator which then handles the rest
+            await self._client.connect()
 
     async def async_is_online(self) -> bool:
         """Check if the server is online."""
@@ -138,7 +155,11 @@ class MinecraftServer:
             ) from error
 
         if isinstance(status_response, JavaStatusResponse):
-            data = self._extract_java_data(status_response)
+            management: MsmpClientResponse | None = None
+            if self._client is not None:
+                management = await self._client.get_all()
+
+            data = self._extract_java_data(status_response, management)
         elif isinstance(status_response, BedrockStatusResponse):
             data = self._extract_bedrock_data(status_response)
         else:
@@ -147,7 +168,9 @@ class MinecraftServer:
         return data
 
     def _extract_java_data(
-        self, status_response: JavaStatusResponse
+        self,
+        status_response: JavaStatusResponse,
+        management: MsmpClientResponse | None = None,
     ) -> MinecraftServerData:
         """Extract Java Edition server data out of status response."""
         players_list: list[str] = []
@@ -164,6 +187,7 @@ class MinecraftServer:
             protocol_version=status_response.version.protocol,
             version=status_response.version.name,
             players_list=players_list,
+            management=management,
         )
 
     def _extract_bedrock_data(

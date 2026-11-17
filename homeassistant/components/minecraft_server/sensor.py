@@ -23,6 +23,7 @@ KEY_MAP_NAME = "map_name"
 KEY_PLAYERS_MAX = "players_max"
 KEY_PLAYERS_ONLINE = "players_online"
 KEY_PROTOCOL_VERSION = "protocol_version"
+KEY_MSMP_GAME_MODE = "msmp_game_mode"
 KEY_VERSION = "version"
 
 UNIT_PLAYERS_MAX = "players"
@@ -56,6 +57,18 @@ def get_extra_state_attributes_players_list(
 
 SENSOR_DESCRIPTIONS = [
     MinecraftServerSensorEntityDescription(
+        key=KEY_MSMP_GAME_MODE,
+        translation_key=KEY_MSMP_GAME_MODE,
+        value_fn=lambda data: (
+            data.management.server_settings.game_mode.game_mode
+            if data.management is not None
+            else None
+        ),
+        attributes_fn=None,
+        supported_server_types={MinecraftServerType.JAVA_EDITION},
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    MinecraftServerSensorEntityDescription(
         key=KEY_VERSION,
         translation_key=KEY_VERSION,
         value_fn=lambda data: data.version,
@@ -65,7 +78,6 @@ SENSOR_DESCRIPTIONS = [
             MinecraftServerType.BEDROCK_EDITION,
             MinecraftServerType.LEGACY_JAVA_EDITION,
         },
-        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     MinecraftServerSensorEntityDescription(
         key=KEY_PROTOCOL_VERSION,
