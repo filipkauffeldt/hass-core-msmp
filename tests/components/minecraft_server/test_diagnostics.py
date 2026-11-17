@@ -11,6 +11,11 @@ from mcstatus.responses import (
 import pytest
 from syrupy.assertion import SnapshotAssertion
 
+from homeassistant.components.diagnostics import REDACTED
+from homeassistant.components.minecraft_server.const import (
+    CONF_MANAGEMENT_HOST,
+    CONF_MANAGEMENT_SECRET,
+)
 from homeassistant.core import HomeAssistant
 
 from .const import (
@@ -78,3 +83,23 @@ async def test_config_entry_diagnostics(
         await get_diagnostics_for_config_entry(hass, hass_client, mock_config_entry)
         == snapshot
     )
+
+
+@pytest.mark.usefixtures("mock_java_server", "mock_msmp_client")
+async def test_config_entry_diagnostics_redacts_management_settings(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    msmp_mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test that the management secret and host are redacted."""
+    msmp_mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(msmp_mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    diagnostics = await get_diagnostics_for_config_entry(
+        hass, hass_client, msmp_mock_config_entry
+    )
+
+    assert diagnostics["config_entry_data"][CONF_MANAGEMENT_SECRET] == REDACTED
+    assert diagnostics["config_entry_data"][CONF_MANAGEMENT_HOST] == REDACTED
+    assert "test-secret" not in str(diagnostics)
