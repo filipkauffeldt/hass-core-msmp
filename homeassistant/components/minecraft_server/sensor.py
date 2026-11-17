@@ -15,6 +15,7 @@ from .const import CONF_MANAGEMENT_HOST, KEY_LATENCY, KEY_MOTD
 from .coordinator import MinecraftServerConfigEntry, MinecraftServerCoordinator
 from .entity import MinecraftServerEntity
 
+ATTR_PLAYERS = "players"
 ATTR_PLAYERS_LIST = "players_list"
 
 KEY_EDITION = "edition"
@@ -41,6 +42,27 @@ class MinecraftServerSensorEntityDescription(SensorEntityDescription):
     attributes_fn: Callable[[MinecraftServerData], dict[str, Any]] | None
     supported_server_types: set[MinecraftServerType]
     requires_management: bool = False
+
+
+def get_players_online(data: MinecraftServerData) -> int:
+    """Return the number of online players, preferring the management data."""
+    if data.management is None:
+        return data.players_online
+
+    return len(data.management.server_status.players)
+
+
+def get_extra_state_attributes_players(data: MinecraftServerData) -> dict[str, Any]:
+    """Return the players with their IDs, or only their names without management."""
+    if data.management is None:
+        return get_extra_state_attributes_players_list(data)
+
+    players = [
+        {"id": player.id, "name": player.name}
+        for player in data.management.server_status.players
+    ]
+
+    return {ATTR_PLAYERS: players}
 
 
 def get_extra_state_attributes_players_list(
@@ -136,8 +158,8 @@ SENSOR_DESCRIPTIONS = [
         key=KEY_PLAYERS_ONLINE,
         translation_key=KEY_PLAYERS_ONLINE,
         native_unit_of_measurement=UNIT_PLAYERS_ONLINE,
-        value_fn=lambda data: data.players_online,
-        attributes_fn=get_extra_state_attributes_players_list,
+        value_fn=get_players_online,
+        attributes_fn=get_extra_state_attributes_players,
         supported_server_types={
             MinecraftServerType.JAVA_EDITION,
             MinecraftServerType.BEDROCK_EDITION,

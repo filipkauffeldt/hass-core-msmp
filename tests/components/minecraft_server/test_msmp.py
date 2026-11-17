@@ -36,6 +36,7 @@ from .const import (
     TEST_CONFIG_ENTRY_ID,
     TEST_HOST,
     TEST_JAVA_STATUS_RESPONSE,
+    TEST_MSMP_PLAYERS,
     TEST_PORT,
     build_msmp_response,
 )
@@ -44,6 +45,7 @@ from tests.common import MockConfigEntry, async_fire_time_changed
 
 GAME_MODE_ENTITY = "sensor.mc_dummyserver_com_25566_msmp_game_mode"
 LATENCY_ENTITY = "sensor.mc_dummyserver_com_25566_latency"
+PLAYERS_ONLINE_ENTITY = "sensor.mc_dummyserver_com_25566_players_online"
 
 
 @pytest.fixture
@@ -179,3 +181,70 @@ async def test_msmp_update_failure(
 
     assert hass.states.get(GAME_MODE_ENTITY).state == STATE_UNAVAILABLE
     assert hass.states.get(LATENCY_ENTITY).state == "5"
+
+
+@pytest.mark.usefixtures("mock_java_server")
+async def test_players_online_msmp(
+    hass: HomeAssistant,
+    msmp_mock_config_entry: MockConfigEntry,
+    mock_msmp_client: MagicMock,
+) -> None:
+    """With MSMP data, players online counts and lists the players with their ids."""
+    mock_msmp_client.return_value.get_all.return_value = build_msmp_response(
+        TEST_MSMP_PLAYERS
+    )
+    msmp_mock_config_entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(msmp_mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get(PLAYERS_ONLINE_ENTITY)
+    assert state.state == "2"
+    assert state.attributes["players"] == [
+        {"id": "069a79f4-44e9-4726-a5be-fca90e38aaf5", "name": "Alice"},
+        {"id": "853c80ef-3c37-49fd-aa49-938b674adae6", "name": "Bob"},
+    ]
+    assert "players_list" not in state.attributes
+
+
+@pytest.mark.usefixtures("mock_java_server", "mock_msmp_client")
+async def test_players_online_msmp_no_players(
+    hass: HomeAssistant, msmp_mock_config_entry: MockConfigEntry
+) -> None:
+    """With MSMP data and no players, the players attribute is an empty list."""
+    msmp_mock_config_entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(msmp_mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get(PLAYERS_ONLINE_ENTITY)
+    assert state.state == "0"
+    assert state.attributes["players"] == []
+    assert "players_list" not in state.attributes
+
+
+@pytest.mark.usefixtures("mock_java_server")
+async def test_players_online_msmp_update_failure(
+    hass: HomeAssistant,
+    msmp_mock_config_entry: MockConfigEntry,
+    mock_msmp_client: MagicMock,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """An MSMP error during an update makes players online fall back to mcstatus."""
+    mock_msmp_client.return_value.get_all.return_value = build_msmp_response(
+        TEST_MSMP_PLAYERS[:1]
+    )
+    msmp_mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(msmp_mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(PLAYERS_ONLINE_ENTITY).state == "1"
+
+    mock_msmp_client.return_value.get_all.side_effect = MsmpRequestError
+    freezer.tick(timedelta(minutes=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+    state = hass.states.get(PLAYERS_ONLINE_ENTITY)
+    assert state.state == "3"
+    assert state.attributes["players_list"] == ["Player 1", "Player 2", "Player 3"]
+    assert "players" not in state.attributes
