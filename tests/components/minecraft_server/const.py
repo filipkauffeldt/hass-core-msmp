@@ -15,6 +15,14 @@ from mcstatus.responses import (
 )
 
 from homeassistant.components.minecraft_server.api import MinecraftServerData
+from homeassistant.components.minecraft_server.msmp.models import (
+    MsmpClientResponse,
+    MsmpGameMode,
+    MsmpGameModeName,
+    MsmpPlayer,
+    MsmpServerSettings,
+    MsmpServerStatus,
+)
 
 TEST_CONFIG_ENTRY_ID: str = "01234567890123456789012345678901"
 TEST_HOST = "mc.dummyserver.com"
@@ -81,3 +89,25 @@ TEST_LEGACY_JAVA_STATUS_RESPONSE = LegacyStatusResponse(
     motd=Motd.parse("Dummy MOTD"),
     latency=5,
 )
+
+TEST_MSMP_PLAYERS = [
+    MsmpPlayer(id="069a79f4-44e9-4726-a5be-fca90e38aaf5", name="Alice"),
+    MsmpPlayer(id="853c80ef-3c37-49fd-aa49-938b674adae6", name="Bob"),
+]
+
+
+def build_msmp_response(
+    players: list[MsmpPlayer] | None = None,
+) -> MsmpClientResponse:
+    """Build a management response for a Java Edition server."""
+    return MsmpClientResponse(
+        server_status=MsmpServerStatus(
+            started=True,
+            version_name="Dummy Version",
+            protocol_version=123,
+            players=players or [],
+        ),
+        server_settings=MsmpServerSettings(
+            game_mode=MsmpGameMode(game_mode=MsmpGameModeName.SURVIVAL)
+        ),
+    )

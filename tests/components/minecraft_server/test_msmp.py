@@ -27,13 +27,6 @@ from homeassistant.components.minecraft_server.msmp.exceptions import (
     MsmpConnectionError,
     MsmpRequestError,
 )
-from homeassistant.components.minecraft_server.msmp.models import (
-    MsmpClientResponse,
-    MsmpGameMode,
-    MsmpGameModeName,
-    MsmpServerSettings,
-    MsmpServerStatus,
-)
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_ADDRESS, CONF_TYPE, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
@@ -44,6 +37,7 @@ from .const import (
     TEST_HOST,
     TEST_JAVA_STATUS_RESPONSE,
     TEST_PORT,
+    build_msmp_response,
 )
 
 from tests.common import MockConfigEntry, async_fire_time_changed
@@ -80,17 +74,7 @@ def mock_msmp_client() -> Generator[MagicMock]:
         autospec=True,
     ) as client_cls:
         client = client_cls.return_value
-        client.get_all.return_value = MsmpClientResponse(
-            server_status=MsmpServerStatus(
-                started=True,
-                version_name="Dummy Version",
-                protocol_version=123,
-                players=[],
-            ),
-            server_settings=MsmpServerSettings(
-                game_mode=MsmpGameMode(game_mode=MsmpGameModeName.SURVIVAL)
-            ),
-        )
+        client.get_all.return_value = build_msmp_response()
         yield client_cls
 
 
