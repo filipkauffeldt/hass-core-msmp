@@ -60,7 +60,7 @@ SENSOR_DESCRIPTIONS = [
         key=KEY_MSMP_GAME_MODE,
         translation_key=KEY_MSMP_GAME_MODE,
         value_fn=lambda data: (
-            data.management["server_settings"]["game_mode"].game_mode
+            data.management.server_settings.game_mode.game_mode
             if data.management is not None
             else None
         ),
@@ -78,7 +78,6 @@ SENSOR_DESCRIPTIONS = [
             MinecraftServerType.BEDROCK_EDITION,
             MinecraftServerType.LEGACY_JAVA_EDITION,
         },
-        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     MinecraftServerSensorEntityDescription(
         key=KEY_PROTOCOL_VERSION,
