@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from .coordinator import MinecraftServerConfigEntry
 
-TO_REDACT: Iterable[Any] = {CONF_ADDRESS, "players_list"}
+TO_REDACT: Iterable[Any] = {CONF_ADDRESS, "players", "players_list"}
 
 
 async def async_get_config_entry_diagnostics(
