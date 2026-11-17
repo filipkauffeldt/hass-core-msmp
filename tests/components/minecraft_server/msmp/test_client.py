@@ -15,8 +15,11 @@ from homeassistant.components.minecraft_server.msmp.exceptions import (
     MsmpRequestError,
 )
 from homeassistant.components.minecraft_server.msmp.models import (
+    MsmpClientResponse,
     MsmpGameMode,
+    MsmpGameModeName,
     MsmpPlayer,
+    MsmpServerSettings,
     MsmpServerStatus,
 )
 
@@ -25,6 +28,11 @@ from .test_ws_connection import FakeWs
 HOST = "localhost"
 PORT = 25585
 SECRET = "super-secret-token"
+STATUS_RESULT = {
+    "started": True,
+    "version": {"name": "1.21.9", "protocol": 773},
+    "players": [{"id": "853c80ef-3c37-49fd-aa49-938b674adae6", "name": "jeb_"}],
+}
 
 
 def create_mock_ws() -> MagicMock:
@@ -270,14 +278,7 @@ async def test_get_server_status_returns_typed_status(
     status_call = asyncio.create_task(client.get_server_status())
     request = await fake_ws.outgoing.get()
 
-    await fake_ws.send_from_server(
-        request["id"],
-        {
-            "started": True,
-            "version": {"name": "1.21.9", "protocol": 773},
-            "players": [{"id": "853c80ef-3c37-49fd-aa49-938b674adae6", "name": "jeb_"}],
-        },
-    )
+    await fake_ws.send_from_server(request["id"], STATUS_RESULT)
 
     assert request["method"] == "minecraft:server/status"
     assert await asyncio.wait_for(status_call, timeout=1) == MsmpServerStatus(
@@ -285,6 +286,23 @@ async def test_get_server_status_returns_typed_status(
         version_name="1.21.9",
         protocol_version=773,
         players=[MsmpPlayer(id="853c80ef-3c37-49fd-aa49-938b674adae6", name="jeb_")],
+    )
+
+
+async def test_get_server_status_without_players(
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test a status result without players is a status with no players."""
+    client, fake_ws = fake_ws_client
+    status_call = asyncio.create_task(client.get_server_status())
+    request = await fake_ws.outgoing.get()
+
+    await fake_ws.send_from_server(
+        request["id"], {"started": True, "version": {"name": "26.3", "protocol": 777}}
+    )
+
+    assert await asyncio.wait_for(status_call, timeout=1) == MsmpServerStatus(
+        started=True, version_name="26.3", protocol_version=777, players=[]
     )
 
 
@@ -300,8 +318,31 @@ async def test_get_game_mode_returns_typed_game_mode(
 
     assert request["method"] == "minecraft:serversettings/game_mode"
     assert await asyncio.wait_for(game_mode_call, timeout=1) == MsmpGameMode(
-        game_mode="survival"
+        game_mode=MsmpGameModeName.SURVIVAL
     )
+
+
+@pytest.mark.parametrize(
+    "malformed_result",
+    [
+        pytest.param("hardcore", id="unknown-game-mode"),
+        pytest.param({"mode": "survival"}, id="wrapped-in-object"),
+        pytest.param(None, id="no-result"),
+    ],
+)
+async def test_get_game_mode_invalid_result(
+    malformed_result: str | dict[str, str] | None,
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test a result that is not one of the protocol's game modes is a request error."""
+    client, fake_ws = fake_ws_client
+    game_mode_call = asyncio.create_task(client.get_game_mode())
+    request = await fake_ws.outgoing.get()
+
+    await fake_ws.send_from_server(request["id"], malformed_result)
+
+    with pytest.raises(MsmpRequestError, match="Unexpected server game mode response"):
+        await asyncio.wait_for(game_mode_call, timeout=1)
 
 
 @pytest.mark.parametrize(
@@ -338,3 +379,63 @@ async def test_get_server_status_raises_request_error_when_result_is_malformed(
 
     with pytest.raises(MsmpRequestError, match="Unexpected server status response"):
         await asyncio.wait_for(status_call, timeout=1)
+
+
+async def test_get_all(
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test get_all combines the status and the game mode into one typed response."""
+    client, fake_ws = fake_ws_client
+    all_call = asyncio.create_task(client.get_all())
+
+    status_request = await fake_ws.outgoing.get()
+    await fake_ws.send_from_server(status_request["id"], STATUS_RESULT)
+    game_mode_request = await fake_ws.outgoing.get()
+    await fake_ws.send_from_server(game_mode_request["id"], "creative")
+
+    assert status_request["method"] == "minecraft:server/status"
+    assert game_mode_request["method"] == "minecraft:serversettings/game_mode"
+    assert await asyncio.wait_for(all_call, timeout=1) == MsmpClientResponse(
+        server_status=MsmpServerStatus(
+            started=True,
+            version_name="1.21.9",
+            protocol_version=773,
+            players=[
+                MsmpPlayer(id="853c80ef-3c37-49fd-aa49-938b674adae6", name="jeb_")
+            ],
+        ),
+        server_settings=MsmpServerSettings(
+            game_mode=MsmpGameMode(game_mode=MsmpGameModeName.CREATIVE)
+        ),
+    )
+
+
+async def test_get_all_invalid_status(
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test get_all stops at an invalid status instead of requesting more."""
+    client, fake_ws = fake_ws_client
+    all_call = asyncio.create_task(client.get_all())
+
+    status_request = await fake_ws.outgoing.get()
+    await fake_ws.send_from_server(status_request["id"], {})
+
+    with pytest.raises(MsmpRequestError, match="Unexpected server status response"):
+        await asyncio.wait_for(all_call, timeout=1)
+    assert fake_ws.outgoing.empty()
+
+
+async def test_get_all_invalid_game_mode(
+    fake_ws_client: tuple[MsmpClient, FakeWs],
+) -> None:
+    """Test get_all fails as a whole when the game mode answer is invalid."""
+    client, fake_ws = fake_ws_client
+    all_call = asyncio.create_task(client.get_all())
+
+    status_request = await fake_ws.outgoing.get()
+    await fake_ws.send_from_server(status_request["id"], STATUS_RESULT)
+    game_mode_request = await fake_ws.outgoing.get()
+    await fake_ws.send_from_server(game_mode_request["id"], "hardcore")
+
+    with pytest.raises(MsmpRequestError, match="Unexpected server game mode response"):
+        await asyncio.wait_for(all_call, timeout=1)
