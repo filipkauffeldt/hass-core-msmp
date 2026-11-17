@@ -15,6 +15,7 @@ from mcstatus.responses import (
 from homeassistant.core import HomeAssistant
 
 from .msmp.client import MsmpClient
+from .msmp.exceptions import MsmpError
 from .msmp.models import MsmpClientResponse
 
 _LOGGER = logging.getLogger(__name__)
@@ -157,7 +158,14 @@ class MinecraftServer:
         if isinstance(status_response, JavaStatusResponse):
             management: MsmpClientResponse | None = None
             if self._client is not None:
-                management = await self._client.get_all()
+                try:
+                    management = await self._client.get_all()
+                except MsmpError as error:
+                    _LOGGER.debug(
+                        "MSMP request to '%s' failed: %s",
+                        self._address,
+                        self._get_error_message(error),
+                    )
 
             data = self._extract_java_data(status_response, management)
         elif isinstance(status_response, BedrockStatusResponse):
