@@ -8,6 +8,21 @@ from typing import Any, Self
 
 
 @dataclass
+class MsmpClientResponse:
+    """Contains all responses the MSMP client can produce."""
+
+    server_status: MsmpServerStatus
+    server_settings: MsmpServerSettings
+
+
+@dataclass
+class MsmpServerSettings:
+    """The `minecraft:serversettings` group contains many endpoints; this class groups those together."""
+
+    game_mode: MsmpGameMode
+
+
+@dataclass
 class MsmpPlayer:
     """A player on the server."""
 
@@ -32,13 +47,13 @@ class MsmpServerStatus:
     @classmethod
     def from_result(cls, result: dict[str, Any]) -> Self:
         """Build the status from the method's result."""
-        if "players" not in result:
-            result["players"] = []
         return cls(
             started=result["started"],
             version_name=result["version"]["name"],
             protocol_version=result["version"]["protocol"],
-            players=[MsmpPlayer.from_result(player) for player in result["players"]],
+            players=[MsmpPlayer.from_result(player) for player in result["players"]]
+            if "players" in result
+            else [],
         )
 
 

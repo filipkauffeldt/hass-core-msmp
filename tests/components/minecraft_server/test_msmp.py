@@ -28,7 +28,9 @@ from homeassistant.components.minecraft_server.msmp.exceptions import (
     MsmpRequestError,
 )
 from homeassistant.components.minecraft_server.msmp.models import (
+    MsmpClientResponse,
     MsmpGameMode,
+    MsmpServerSettings,
     MsmpServerStatus,
 )
 from homeassistant.config_entries import ConfigEntryState
@@ -77,13 +79,17 @@ def mock_msmp_client() -> Generator[MagicMock]:
         autospec=True,
     ) as client_cls:
         client = client_cls.return_value
-        client.get_server_status.return_value = MsmpServerStatus(
-            started=True,
-            version_name="Dummy Version",
-            protocol_version=123,
-            players=[],
+        client.get_all.return_value = MsmpClientResponse(
+            server_status=MsmpServerStatus(
+                started=True,
+                version_name="Dummy Version",
+                protocol_version=123,
+                players=[],
+            ),
+            server_settings=MsmpServerSettings(
+                game_mode=MsmpGameMode(game_mode="survival")
+            ),
         )
-        client.get_game_mode.return_value = MsmpGameMode(game_mode="survival")
         yield client_cls
 
 
@@ -182,7 +188,7 @@ async def test_msmp_update_failure(
     await hass.async_block_till_done()
     assert hass.states.get(GAME_MODE_ENTITY).state == "survival"
 
-    mock_msmp_client.return_value.get_game_mode.side_effect = MsmpRequestError
+    mock_msmp_client.return_value.get_all.side_effect = MsmpRequestError
     freezer.tick(timedelta(minutes=1))
     async_fire_time_changed(hass)
     await hass.async_block_till_done()

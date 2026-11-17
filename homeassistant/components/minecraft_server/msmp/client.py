@@ -8,7 +8,12 @@ from typing import Any, Self
 import aiohttp
 
 from .exceptions import MsmpRequestError
-from .models import MsmpGameMode, MsmpServerStatus
+from .models import (
+    MsmpClientResponse,
+    MsmpGameMode,
+    MsmpServerSettings,
+    MsmpServerStatus,
+)
 from .ws_connection import DEFAULT_TLS, WsConnection
 
 
@@ -74,6 +79,16 @@ class MsmpClient:
             raise MsmpRequestError(
                 f"Unexpected server game mode response: {result!r}"
             ) from err
+
+    async def get_all(self) -> MsmpClientResponse:
+        """Return all available endpoints.
+
+        Raises MsmpRequestError if any server's answer is not valid.
+        """
+        return MsmpClientResponse(
+            server_status=await self.get_server_status(),
+            server_settings=MsmpServerSettings(game_mode=await self.get_game_mode()),
+        )
 
     async def close(self) -> None:
         """Close the WebSocket cleanly. Safe to call more than once."""

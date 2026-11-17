@@ -28,8 +28,9 @@ from .const import (
     DEFAULT_MANAGEMENT_PORT,
     DOMAIN,
 )
-from .msmp.exceptions import MsmpAuthError, MsmpConnectionError
-from .msmp.ws_connection import DEFAULT_TLS, WsConnection
+from .msmp.client import MsmpClient
+from .msmp.exceptions import MsmpAuthError, MsmpConnectionError, MsmpRequestError
+from .msmp.ws_connection import DEFAULT_TLS
 
 DEFAULT_ADDRESS = "localhost:25565"
 
@@ -122,17 +123,23 @@ class MinecraftServerConfigFlow(ConfigFlow, domain=DOMAIN):
             port = int(user_input[CONF_MANAGEMENT_PORT])
             tls = user_input[CONF_MANAGEMENT_TLS]
 
-            ws = WsConnection(
+            client = MsmpClient(
                 async_get_clientsession(self.hass), host, port, secret, tls=tls
             )
 
             try:
-                await ws.connect()
+                await client.connect()
+                await client.get_server_status()
             except MsmpAuthError:
                 errors["base"] = "invalid_auth"
             except MsmpConnectionError as error:
                 _LOGGER.debug("Management connection failed: %s", error)
                 errors["base"] = "management_cannot_connect"
+            except MsmpRequestError as error:
+                _LOGGER.debug(
+                    "Management connection established, but request failed: %s", error
+                )
+                errors["base"] = "management_request_failed"
             else:
                 _LOGGER.debug("Management connection to %s:%s succeeded", host, port)
                 return self.async_create_entry(
@@ -146,7 +153,7 @@ class MinecraftServerConfigFlow(ConfigFlow, domain=DOMAIN):
                     },
                 )
             finally:
-                await ws.close()
+                await client.close()
         return self._show_management_form(user_input, errors)
 
     def _show_config_form(

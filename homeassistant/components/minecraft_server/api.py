@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
 import logging
-from typing import Any
 
 from dns.resolver import LifetimeTimeout
 from mcstatus import BedrockServer, JavaServer, LegacyServer
@@ -17,6 +16,7 @@ from homeassistant.core import HomeAssistant
 
 from .msmp.client import MsmpClient
 from .msmp.exceptions import MsmpError
+from .msmp.models import MsmpClientResponse
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class MinecraftServerData:
     players_list: list[str] | None = None
 
     # Data from management protocol (only possible in 'Java Edition')
-    management: dict[str, Any] | None = None
+    management: MsmpClientResponse | None = None
 
     # Data available only in 'Bedrock Edition'
     edition: str | None = None
@@ -117,7 +117,7 @@ class MinecraftServer:
         )
 
         if self._client is not None:
-            # Throws `MsmpAuthException` or `MsmpConnectionException
+            # Throws `MsmpAuthError` or `MsmpConnectionError`
             # if something went wrong with the setup. Propagates to
             # the coordinator which then handles the rest
             await self._client.connect()
@@ -156,15 +156,10 @@ class MinecraftServer:
             ) from error
 
         if isinstance(status_response, JavaStatusResponse):
-            management: dict[str, Any] | None = None
+            management: MsmpClientResponse | None = None
             if self._client is not None:
                 try:
-                    management = {
-                        "server_status": await self._client.get_server_status(),
-                        "server_settings": {
-                            "game_mode": await self._client.get_game_mode(),
-                        },
-                    }
+                    management = await self._client.get_all()
                 except MsmpError as error:
                     _LOGGER.debug(
                         "MSMP request to '%s' failed: %s",
@@ -183,7 +178,7 @@ class MinecraftServer:
     def _extract_java_data(
         self,
         status_response: JavaStatusResponse,
-        management: dict[str, Any] | None = None,
+        management: MsmpClientResponse | None = None,
     ) -> MinecraftServerData:
         """Extract Java Edition server data out of status response."""
         players_list: list[str] = []
