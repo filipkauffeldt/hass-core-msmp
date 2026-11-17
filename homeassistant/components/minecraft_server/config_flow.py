@@ -209,9 +209,12 @@ class MinecraftServerConfigFlow(ConfigFlow, domain=DOMAIN):
                             min=1, max=65535, mode=NumberSelectorMode.BOX
                         )
                     ),
-                    probatio.Optional(CONF_MANAGEMENT_SECRET): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                    ),
+                    probatio.Optional(
+                        CONF_MANAGEMENT_SECRET,
+                        description={
+                            "suggested_value": user_input.get(CONF_MANAGEMENT_SECRET)
+                        },
+                    ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
                     probatio.Required(
                         CONF_MANAGEMENT_TLS,
                         default=user_input.get(CONF_MANAGEMENT_TLS, DEFAULT_TLS),

@@ -534,3 +534,22 @@ async def test_management_errors(
     assert result["step_id"] == "management"
     assert result["errors"] == {"base": error}
     mock_msmp_client.close.assert_awaited_once()
+
+
+async def test_management_error_keeps_secret(
+    hass: HomeAssistant, mock_msmp_client: MagicMock
+) -> None:
+    """Test the secret is still in the form after an error, so a retry is not a skip."""
+    mock_msmp_client.connect.side_effect = MsmpConnectionError
+    result = await _async_start_java_management_step(hass)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=MANAGEMENT_INPUT
+    )
+
+    secret_key = next(
+        key for key in result["data_schema"].schema if key == CONF_MANAGEMENT_SECRET
+    )
+    assert secret_key.description == {
+        "suggested_value": MANAGEMENT_INPUT[CONF_MANAGEMENT_SECRET]
+    }
