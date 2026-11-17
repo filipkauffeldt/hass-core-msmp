@@ -134,8 +134,7 @@ async def test_no_msmp_configured(
 ) -> None:
     """Without MSMP settings, no client is created and mcstatus sensors still work.
 
-    The game mode sensor is still created for Java Edition, with state unknown.
-    This documents the current behaviour.
+    The game mode sensor is not created at all.
     """
     java_mock_config_entry.add_to_hass(hass)
 
@@ -145,7 +144,7 @@ async def test_no_msmp_configured(
     assert java_mock_config_entry.state is ConfigEntryState.LOADED
     mock_msmp_client.assert_not_called()
     assert hass.states.get(LATENCY_ENTITY).state == "5"
-    assert hass.states.get(GAME_MODE_ENTITY).state == STATE_UNAVAILABLE
+    assert hass.states.get(GAME_MODE_ENTITY) is None
 
 
 @pytest.mark.usefixtures("mock_java_server")

@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from .api import MinecraftServerData, MinecraftServerType
-from .const import KEY_LATENCY, KEY_MOTD
+from .const import CONF_MANAGEMENT_HOST, KEY_LATENCY, KEY_MOTD
 from .coordinator import MinecraftServerConfigEntry, MinecraftServerCoordinator
 from .entity import MinecraftServerEntity
 
@@ -40,6 +40,7 @@ class MinecraftServerSensorEntityDescription(SensorEntityDescription):
     value_fn: Callable[[MinecraftServerData], StateType]
     attributes_fn: Callable[[MinecraftServerData], dict[str, Any]] | None
     supported_server_types: set[MinecraftServerType]
+    requires_management: bool = False
 
 
 def get_extra_state_attributes_players_list(
@@ -59,6 +60,7 @@ SENSOR_DESCRIPTIONS = [
     MinecraftServerSensorEntityDescription(
         key=KEY_MSMP_GAME_MODE,
         translation_key=KEY_MSMP_GAME_MODE,
+        requires_management=True,
         value_fn=lambda data: (
             data.management.server_settings.game_mode.game_mode
             if data.management is not None
@@ -181,6 +183,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Minecraft Server sensor platform."""
     coordinator = config_entry.runtime_data
+    has_management = CONF_MANAGEMENT_HOST in config_entry.data
 
     # Add sensor entities.
     async_add_entities(
@@ -189,6 +192,7 @@ async def async_setup_entry(
             for description in SENSOR_DESCRIPTIONS
             if config_entry.data.get(CONF_TYPE, MinecraftServerType.JAVA_EDITION)
             in description.supported_server_types
+            if has_management or not description.requires_management
         ]
     )
 
